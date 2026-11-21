@@ -8,9 +8,19 @@ Three desktop companions for macOS and Windows. Move your mouse and your pet fol
 
 ## In the app
 
-These two views show the white dragon running on a Mac. In the left panel the cursor is to the left of the window. In the right panel it has moved to the right. Watch how her pupils shift and her head tilts.
+### Following the cursor
 
-![Two Mac previews of the white dragon holding the mouse and looking toward opposite sides of the window](docs/images/cursor-tracking.png)
+The columns show the blue, orange and white pets from left to right. In the top row, the cursor is to the left of the pet's window. In the bottom row, it is to the right. Compare the two pictures in each column to see how the pet's pupils shift and her head tilts.
+
+![Mac previews of all three pets looking left in the top row and right in the bottom row](docs/images/cursor-tracking.png)
+
+### Head pats
+
+Click the top of a pet's head or gently stroke it back and forth. She closes her eyes and smiles as little hearts float above her.
+
+![The blue, orange and white pets smiling with their eyes closed and hearts floating above their heads](docs/images/head-pat.png)
+
+### Holding the mouse
 
 The columns below show the blue, orange and white characters. The top row shows their hands at rest. The bottom row shows how each character's right hand settles over the mouse buttons.
 
