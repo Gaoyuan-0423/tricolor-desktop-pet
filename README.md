@@ -6,13 +6,29 @@
 
 [下载 v1.2.0 · macOS / Windows / 源码](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/tag/v1.2.0)
 
+## 三位桌宠的待机形象
+
+从左到右依次是蓝发女仆、橙发少女和白发龙角少女。点开任意一位可以查看完整尺寸。
+
+<p align="center">
+  <a href="docs/images/idle-blue.png"><img src="docs/images/idle-blue.png" alt="蓝发女仆的完整待机画面，面前放着蓝色键鼠" width="31%"></a>
+  <a href="docs/images/idle-amber.png"><img src="docs/images/idle-amber.png" alt="橙发少女的完整待机画面，面前放着橙色键鼠" width="31%"></a>
+  <a href="docs/images/idle-frost.png"><img src="docs/images/idle-frost.png" alt="白发龙角少女的完整待机画面，面前放着淡紫色键鼠" width="31%"></a>
+</p>
+
 ## 桌宠实际画面
 
 ### 视线跟随
 
-三列从左到右依次是蓝、橙、白三个角色。上排的光标在桌宠窗口左侧，下排在右侧。沿同一列上下看，可以对照每个角色的瞳孔位置和头部朝向。
+下方三段 Mac 录屏也按蓝、橙、白排列，每位角色各有一段。光标从窗口一侧移到另一侧时，目光先转过去，头部随后轻轻转动。
 
-![三个角色在 Mac 上随光标向左看（上排）和向右看（下排）的画面对照](docs/images/cursor-tracking.png)
+<p align="center">
+  <a href="docs/images/gaze-blue.gif"><img src="docs/images/gaze-blue.gif" alt="蓝发女仆的目光和头部跟随光标左右转动" width="31%"></a>
+  <a href="docs/images/gaze-amber.gif"><img src="docs/images/gaze-amber.gif" alt="橙发少女的目光和头部跟随光标左右转动" width="31%"></a>
+  <a href="docs/images/gaze-frost.gif"><img src="docs/images/gaze-frost.gif" alt="白发龙角少女的目光和头部跟随光标左右转动" width="31%"></a>
+</p>
+
+[查看三个角色向左和向右看的静帧对照，含眼部放大图](docs/images/cursor-tracking.png)
 
 ### 摸头
 

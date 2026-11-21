@@ -6,13 +6,29 @@ Three desktop companions for macOS and Windows. Move your mouse and your pet fol
 
 [Download v1.2.0 · macOS / Windows / source](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/tag/v1.2.0)
 
+## The three pets at rest
+
+The blue-haired maid, orange-haired companion and white-haired dragon appear from left to right. Click any pet for a full-size view.
+
+<p align="center">
+  <a href="docs/images/idle-blue.png"><img src="docs/images/idle-blue.png" alt="The blue-haired maid at rest with her blue keyboard and mouse" width="31%"></a>
+  <a href="docs/images/idle-amber.png"><img src="docs/images/idle-amber.png" alt="The orange-haired pet at rest with her orange keyboard and mouse" width="31%"></a>
+  <a href="docs/images/idle-frost.png"><img src="docs/images/idle-frost.png" alt="The white-haired dragon at rest with her lavender keyboard and mouse" width="31%"></a>
+</p>
+
 ## In the app
 
 ### Following the cursor
 
-The columns show the blue, orange and white pets from left to right. In the top row, the cursor is to the left of the pet's window. In the bottom row, it is to the right. Compare the two pictures in each column to see how the pet's pupils shift and her head tilts.
+The three recordings follow the same order, with one Mac preview per pet. As the cursor moves from one side of the window to the other, her eyes shift first and her head turns a moment later.
 
-![Mac previews of all three pets looking left in the top row and right in the bottom row](docs/images/cursor-tracking.png)
+<p align="center">
+  <a href="docs/images/gaze-blue.gif"><img src="docs/images/gaze-blue.gif" alt="The blue-haired maid turns her eyes and head as the cursor moves from side to side" width="31%"></a>
+  <a href="docs/images/gaze-amber.gif"><img src="docs/images/gaze-amber.gif" alt="The orange-haired pet tracks the cursor with her eyes and head" width="31%"></a>
+  <a href="docs/images/gaze-frost.gif"><img src="docs/images/gaze-frost.gif" alt="The white-haired dragon turns to follow the cursor with her eyes and head" width="31%"></a>
+</p>
+
+[Compare left and right stills for all three pets, with close-ups of their eyes](docs/images/cursor-tracking.png)
 
 ### Head pats
 
