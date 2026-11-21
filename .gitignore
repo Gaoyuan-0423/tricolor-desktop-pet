@@ -1,0 +1,9 @@
+.DS_Store
+__pycache__/
+/BlackCat/build/
+/BlackCat/windows/assets/*
+!/BlackCat/windows/assets/0.wav
+!/BlackCat/windows/assets/1.wav
+!/BlackCat/windows/assets/2.wav
+/*.zip
+/IMG_*.[jJ][pP][gG]
