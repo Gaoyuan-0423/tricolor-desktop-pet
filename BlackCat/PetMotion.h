@@ -32,6 +32,7 @@ FOUNDATION_EXPORT int PetIrisGain(int faceLevel);
 typedef NS_ENUM(NSInteger, PetHobby) { PetReading, PetRice, PetCloud };
 typedef struct {
     NSInteger lastActivity, wakeAt, holdAt, releaseAt;
+    NSInteger sleepAfter; // Idle milliseconds before drowsiness; deep sleep starts 3 s later.
     double wakeDrop, wakeGazeLoss, releaseWeight;
     int wakeLids, wakeRestStage;
     BOOL wakingFromSleep;

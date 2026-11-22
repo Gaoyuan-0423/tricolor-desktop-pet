@@ -1,6 +1,11 @@
 #import <Cocoa/Cocoa.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <ImageIO/ImageIO.h>
+// CVDisplayLink is deprecated from macOS 15 but remains the only vsync-driven
+// tick source compatible with the 12.0 deployment target.
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#import <CoreVideo/CVDisplayLink.h>
+#import <QuartzCore/CoreAnimation.h>
 #import <stdio.h>
 #import "PetFrameAtlas.h"
 #import "PetGazeMap.h"
@@ -12,6 +17,7 @@ static const CGFloat frameHeight = 270;
 static const size_t rasterWidth = 600, rasterHeight = 540, keyPatchHeight = 250;
 static const CGFloat previewControlsHeight = 48;
 static NSArray<NSNumber *> *scaleOptions;
+static NSArray<NSNumber *> *sleepOptions;
 static NSArray<NSString *> *roleIDs;
 static NSArray<NSString *> *roleNames;
 
@@ -335,13 +341,15 @@ static NSURL *soundURL(int kind) {
 - (void)pressKey:(unsigned int)code atTime:(NSInteger)eventTime;
 - (void)mouseActivity:(NSEventType)eventType;
 - (void)notePhysicalActivity;
+- (void)setSleepAfterMs:(NSInteger)milliseconds;
 - (void)tick;
 @end
 
 @implementation PetView {
     NSCache<NSString *, NSData *> *_framePixels;
     NSString *_shownFrame;
-    NSImage *_currentImage;
+    CALayer *_imageLayer;
+    CAShapeLayer *_markStrokes[3][2];
     CGImageRef _idleReference;
     PetFrameAtlas *_atlas;
     PetGazeMap *_gazeMap;
@@ -375,6 +383,8 @@ static NSURL *soundURL(int kind) {
         _muted = [NSUserDefaults.standardUserDefaults boolForKey:@"soundMuted"];
         _started = milliseconds();
         PetInteractionInit(&_interaction,_started);
+        NSInteger savedSleep = [NSUserDefaults.standardUserDefaults integerForKey:@"sleepAfterSeconds"];
+        if (savedSleep >= 5) _interaction.sleepAfter = savedSleep*1000-3000;
         _shownZ=-1;
         PetHandsInit(&_hands);
         PetPatsInit(&_pats);
@@ -383,9 +393,21 @@ static NSURL *soundURL(int kind) {
         _interaction.hobby=hobbyForRole(_role);
         _atlas = atlasForRole(_role);
         _gazeMap = gazeMapForRole(_role);
+        // The pet draws on Core Animation layers: frame swaps assign layer.contents
+        // and the compositor scales them on the GPU, with no per-tick drawRect pass.
+        self.layer = [CALayer layer];
+        self.wantsLayer = YES;
+        _imageLayer = [CALayer layer];
+        _imageLayer.contentsGravity = kCAGravityResizeAspect;
+        _imageLayer.frame = self.bounds;
+        [self.layer addSublayer:_imageLayer];
         [self tick];
     }
     return self;
+}
+
+- (void)setSleepAfterMs:(NSInteger)milliseconds {
+    if (milliseconds >= 5000) _interaction.sleepAfter = milliseconds-3000;
 }
 
 - (NSString *)accessibilityLabel {
@@ -640,7 +662,7 @@ static NSURL *soundURL(int kind) {
         NSString *name=_interaction.hobby==PetRice ? @"rice" : _interaction.hobby==PetReading ? @"book" : @"toss";
         hands=[NSString stringWithFormat:@"%@%d",name,_mood.hobbyPose];
     } else if (_interaction.hobby!=PetRice && _mood.drowsy && [hands hasPrefix:@"idle"]) {
-        int stage=MIN(4,1+(int)((now-_interaction.lastActivity-57000)/750));
+        int stage=MIN(4,1+(int)((now-_interaction.lastActivity-_interaction.sleepAfter)/750));
         hands=[NSString stringWithFormat:@"rest%d",stage];
     }
     PetExpression face=_mood.hobbyPose ? (PetExpression){.heart=-1} : PetFace(&_pats,now,elapsed);
@@ -734,7 +756,7 @@ static NSURL *soundURL(int kind) {
     effective.eyeY=(int)lround(effective.eyeY*eyeGain);
     NSPoint toy=playing ? cloudCenter(_mood) : NSZeroPoint;
     if (reading) {
-        double sweep=sin(2*M_PI*(now-_interaction.lastActivity-45000)/1600.0);
+        double sweep=sin(2*M_PI*(now-_interaction.lastActivity-_interaction.sleepAfter+12000)/1600.0);
         effective=(PetGazePose){(int)lround(64*.04*sweep),8,(int)lround(64*.14*sweep),22};
         eyeGain=1;
     } else if (playing) {
@@ -749,7 +771,7 @@ static NSURL *soundURL(int kind) {
     toy=NSMakePoint(round(toy.x),round(toy.y));
     if (!NSEqualPoints(toy,_shownToy)) { changed=YES; _shownToy=toy; }
     int z=_mood.zPhase;
-    if (z!=_shownZ) { _shownZ=z; [self setNeedsDisplay:YES]; }
+    if (z!=_shownZ) { _shownZ=z; [self rebuildSleepMarks]; }
     if (!changed && !memcmp(&effective,&_shownPose,sizeof(effective))) return;
     _shownPose=effective;
     NSData *pixels=[_gazeMap pixelsForSource:_hobbyPortrait ?: _neutralPixels pose:effective openEyes:eyeGain>0];
@@ -760,44 +782,61 @@ static NSURL *soundURL(int kind) {
         pixels=drawCloud(pixels,cloud,_toyBounds,toy);
     }
     CGImageRef image=PetImageFromRGBA(pixels,rasterWidth,rasterHeight);
-    _currentImage=image ? [[NSImage alloc] initWithCGImage:image size:NSMakeSize(frameWidth,frameHeight)] : nil;
-    _currentImage.cacheMode=NSImageCacheNever;
+    _imageLayer.contents = image ? (__bridge id)image : nil;
     if (image) CGImageRelease(image);
-    [self setNeedsDisplay:YES];
 }
 
-- (void)drawSleepMarksInRect:(NSRect)rect scale:(CGFloat)scale {
-    if (_shownZ<0) return;
-    for (int i=0;i<3;i++) {
-        NSInteger t=(_shownZ*80-360*i+2000)%2000;
-        if (t>=1100) continue;
-        CGFloat opacity=(190/255.0)*MIN(1,MIN(t/180.0,(1100-t)/280.0));
-        CGFloat x=NSMinX(rect)+(216+13*i)*scale, y=NSMaxY(rect)-(82-15*i-6*t/1100.0)*scale;
-        CGFloat side=(5+2*i)*scale;
-        NSBezierPath *z=[NSBezierPath bezierPath];
-        [z moveToPoint:NSMakePoint(x,y)];
-        [z lineToPoint:NSMakePoint(x+side,y)];
-        [z lineToPoint:NSMakePoint(x,y-side)];
-        [z lineToPoint:NSMakePoint(x+side,y-side)];
-        z.lineJoinStyle=NSLineJoinStyleRound; z.lineCapStyle=NSLineCapStyleRound;
-        [[NSColor colorWithWhite:1 alpha:opacity] setStroke]; z.lineWidth=3.1*scale; [z stroke];
-        [[NSColor colorWithSRGBRed:.30 green:.36 blue:.53 alpha:opacity] setStroke]; z.lineWidth=1.35*scale; [z stroke];
+// Sleep Z marks ride their own shape layers above the image layer, using the same
+// aspect-fit rect and (unflipped) geometry the old drawRect path used.
+- (void)rebuildSleepMarks {
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    if (_shownZ>=0 && !_markStrokes[0][0]) {
+        for (int i=0;i<3;i++) for (int pass=0;pass<2;pass++) {
+            _markStrokes[i][pass] = [CAShapeLayer layer];
+            _markStrokes[i][pass].fillColor = nil;
+            _markStrokes[i][pass].lineJoin = kCALineJoinRound;
+            _markStrokes[i][pass].lineCap = kCALineCapRound;
+            [self.layer addSublayer:_markStrokes[i][pass]];
+        }
     }
-}
-
-- (void)drawRect:(NSRect)dirty {
-    [NSColor.clearColor setFill];
-    NSRectFillUsingOperation(dirty, NSCompositingOperationCopy);
     NSSize available = self.bounds.size;
     CGFloat scale = MIN(available.width / frameWidth, available.height / frameHeight);
     NSRect dest = NSMakeRect((available.width - frameWidth*scale)/2,
                              (available.height - frameHeight*scale)/2,
                              frameWidth*scale, frameHeight*scale);
-    NSGraphicsContext.currentContext.imageInterpolation = NSImageInterpolationHigh;
-    [_currentImage drawInRect:dest fromRect:NSZeroRect operation:NSCompositingOperationSourceOver
-                     fraction:1 respectFlipped:YES hints:nil];
-    [self drawSleepMarksInRect:dest scale:scale];
+    for (int i=0;i<3;i++) {
+        NSInteger t=(_shownZ*80-360*i+2000)%2000;
+        BOOL hidden = _shownZ<0 || t>=1100;
+        CGFloat opacity=hidden ? 0 : (190/255.0)*MIN(1,MIN(t/180.0,(1100-t)/280.0));
+        CGFloat x=NSMinX(dest)+(216+13*i)*scale, y=NSMaxY(dest)-(82-15*i-6*t/1100.0)*scale;
+        CGFloat side=(5+2*i)*scale;
+        CGMutablePathRef path=CGPathCreateMutable();
+        CGPathMoveToPoint(path, NULL, x, y);
+        CGPathAddLineToPoint(path, NULL, x+side, y);
+        CGPathAddLineToPoint(path, NULL, x, y-side);
+        CGPathAddLineToPoint(path, NULL, x+side, y-side);
+        for (int pass=0;pass<2;pass++) {
+            CAShapeLayer *stroke=_markStrokes[i][pass];
+            stroke.path = hidden ? nil : path;
+            stroke.opacity = opacity;
+            stroke.lineWidth = (pass ? 1.35 : 3.1)*scale;
+            stroke.strokeColor = pass
+                ? [NSColor colorWithSRGBRed:.30 green:.36 blue:.53 alpha:1].CGColor
+                : [NSColor colorWithWhite:1 alpha:1].CGColor;
+        }
+        CGPathRelease(path);
+    }
+    [CATransaction commit];
 }
+
+- (void)setFrameSize:(NSSize)newSize {
+    [super setFrameSize:newSize];
+    _imageLayer.frame = self.bounds;
+    if (_markStrokes[0][0]) [self rebuildSleepMarks];
+}
+
+- (void)drawRect:(NSRect)dirty { }
 @end
 
 @interface PetApplication : NSObject <NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate>
@@ -807,6 +846,17 @@ static NSURL *soundURL(int kind) {
 @end
 
 static CGEventRef observeKey(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void *context);
+
+// Ticks ride the display's vsync cadence instead of a free-running 60 Hz NSTimer,
+// whose phase drift versus the compositor shows up as periodic micro-judder.
+// The callback runs on the display-link thread. A main-queue data source
+// coalesces ticks while the main thread is busy instead of queuing each frame.
+static CVReturn petDisplayLinkTick(CVDisplayLinkRef link, const CVTimeStamp *now,
+                                   const CVTimeStamp *outputTime, CVOptionFlags flagsIn,
+                                   CVOptionFlags *flagsOut, void *context) {
+    dispatch_source_merge_data((__bridge dispatch_source_t)context, 1);
+    return kCVReturnSuccess;
+}
 
 // Draw into an 18-point template so AppKit can tint the shapes in every menu bar appearance.
 static NSImage *menuBarIcon(NSString *role) {
@@ -866,11 +916,17 @@ static NSImage *menuBarIcon(NSString *role) {
     NSButton *_muteControl;
     NSMenuItem *_muteItem, *_keyboardStatus, *_controlsItem;
     NSMenuItem *_loginItem, *_loginSettings;
-    NSArray<NSMenuItem *> *_roleItems, *_sizeItems;
+    NSArray<NSMenuItem *> *_roleItems, *_sizeItems, *_sleepItems;
+    NSInteger _sleepSeconds;
     NSInteger _scalePercent;
     id _localMonitor, _globalMonitor;
     CFMachPortRef _tap;
     CFRunLoopSourceRef _source;
+    CVDisplayLinkRef _displayLink;
+    dispatch_source_t _displayTickSource;
+    NSTimer *_displayFallbackTimer;
+    BOOL _stoppingDisplayTicks;
+    id _activity;
 }
 
 - (void)selectRole:(id)sender {
@@ -927,6 +983,13 @@ static NSImage *menuBarIcon(NSString *role) {
     [self updateMenu];
 }
 
+- (void)selectSleep:(NSMenuItem *)sender {
+    _sleepSeconds = sender.tag;
+    [NSUserDefaults.standardUserDefaults setInteger:_sleepSeconds forKey:@"sleepAfterSeconds"];
+    [self.pet setSleepAfterMs:_sleepSeconds*1000];
+    [self updateMenu];
+}
+
 - (void)togglePreviewControls:(id)sender {
     BOOL visible = _roleControl.hidden;
     _roleControl.hidden = !visible;
@@ -951,6 +1014,8 @@ static NSImage *menuBarIcon(NSString *role) {
         item.state = item.tag == (NSInteger)i ? NSControlStateValueOn : NSControlStateValueOff;
     for (NSMenuItem *item in _sizeItems)
         item.state = item.tag == _scalePercent ? NSControlStateValueOn : NSControlStateValueOff;
+    for (NSMenuItem *item in _sleepItems)
+        item.state = item.tag == _sleepSeconds ? NSControlStateValueOn : NSControlStateValueOff;
     NSControlStateValue muteState = self.pet.muted ? NSControlStateValueOn : NSControlStateValueOff;
     _muteItem.state = muteState;
     _muteControl.state = muteState;
@@ -1012,6 +1077,17 @@ static NSImage *menuBarIcon(NSString *role) {
     }
     _sizeItems = sizes.itemArray;
     [menu addItemWithTitle:@"大小" action:nil keyEquivalent:@""].submenu = sizes;
+    NSMenu *sleeps = [[NSMenu alloc] initWithTitle:@"入睡等待"];
+    for (NSNumber *seconds in sleepOptions) {
+        NSInteger value = seconds.integerValue;
+        NSString *title = value % 60 ? [NSString stringWithFormat:@"%ld 秒", (long)value]
+                                     : [NSString stringWithFormat:@"%ld 分钟", (long)(value / 60)];
+        NSMenuItem *choice = [sleeps addItemWithTitle:title action:@selector(selectSleep:) keyEquivalent:@""];
+        choice.tag = value;
+        choice.target = self;
+    }
+    _sleepItems = sleeps.itemArray;
+    [menu addItemWithTitle:@"入睡等待" action:nil keyEquivalent:@""].submenu = sleeps;
     _muteItem = [menu addItemWithTitle:@"静音" action:@selector(toggleMute:) keyEquivalent:@""];
     _muteItem.target = self;
     if (self.preview) {
@@ -1072,6 +1148,8 @@ static NSImage *menuBarIcon(NSString *role) {
 - (void)applicationDidFinishLaunching:(NSNotification *)note {
     NSInteger saved = [NSUserDefaults.standardUserDefaults integerForKey:@"petScalePercent"];
     _scalePercent = [scaleOptions containsObject:@(saved)] ? saved : 100;
+    NSInteger savedSleep = [NSUserDefaults.standardUserDefaults integerForKey:@"sleepAfterSeconds"];
+    _sleepSeconds = [sleepOptions containsObject:@(savedSleep)] ? savedSleep : 60;
     BOOL controlsVisible = self.preview && [NSUserDefaults.standardUserDefaults boolForKey:@"showsPreviewControls"];
     NSRect rect = NSMakeRect(30, 60, frameWidth, frameHeight);
     NSWindowStyleMask style = self.preview ? NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
@@ -1081,6 +1159,7 @@ static NSImage *menuBarIcon(NSString *role) {
     _window.acceptsMouseMovedEvents = YES;
     self.pet = [[PetView alloc] initWithFrame:_window.contentView.bounds];
     self.pet.draggable = !self.preview;
+    [self.pet setSleepAfterMs:_sleepSeconds*1000];
     [_window.contentView addSubview:self.pet];
     if (self.preview) {
         _window.title = @"三色桌宠 · 动作预览";
@@ -1152,10 +1231,33 @@ static NSImage *menuBarIcon(NSString *role) {
         }];
         if (!CGPreflightListenEventAccess()) CGRequestListenEventAccess();
     }
-    NSTimer *animation = [NSTimer timerWithTimeInterval:1.0/60 repeats:YES block:^(NSTimer *timer) {
-        [weakSelf.pet tick];
-    }];
-    [NSRunLoop.mainRunLoop addTimer:animation forMode:NSRunLoopCommonModes];
+    _displayTickSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_DATA_OR, 0, 0, dispatch_get_main_queue());
+    dispatch_source_set_event_handler(_displayTickSource, ^{
+        PetApplication *owner = weakSelf;
+        if (owner && !owner->_stoppingDisplayTicks) [owner.pet tick];
+    });
+    dispatch_resume(_displayTickSource);
+    CVReturn linkStatus = CVDisplayLinkCreateWithActiveCGDisplays(&_displayLink);
+    if (linkStatus == kCVReturnSuccess && _displayLink)
+        linkStatus = CVDisplayLinkSetOutputCallback(_displayLink, petDisplayLinkTick, (__bridge void *)_displayTickSource);
+    if (linkStatus == kCVReturnSuccess && _displayLink)
+        linkStatus = CVDisplayLinkStart(_displayLink);
+    if (linkStatus != kCVReturnSuccess || !_displayLink) {
+        if (_displayLink) { CVDisplayLinkStop(_displayLink); CVDisplayLinkRelease(_displayLink); _displayLink = NULL; }
+        dispatch_source_cancel(_displayTickSource);
+        _displayTickSource = nil;
+        NSLog(@"Display link unavailable (%d); using timer", (int)linkStatus);
+        _displayFallbackTimer = [NSTimer timerWithTimeInterval:1.0/60.0 repeats:YES block:^(NSTimer *timer) {
+            PetApplication *owner = weakSelf;
+            if (owner && !owner->_stoppingDisplayTicks) [owner.pet tick];
+        }];
+        [NSRunLoop.mainRunLoop addTimer:_displayFallbackTimer forMode:NSRunLoopCommonModes];
+    }
+    // A transparent always-on-top window over other apps looks idle to App Nap,
+    // which then coalesces timers and chokes the pet's animation.
+    _activity = [[NSProcessInfo processInfo] beginActivityWithOptions:
+        (NSActivityOptions)(NSActivityLatencyCritical | NSActivityUserInitiated)
+        reason:@"桌面宠物动画"];
 }
 
 - (void)windowDidResignKey:(NSNotification *)notification { [self.pet cancelOperation:nil]; }
@@ -1163,9 +1265,19 @@ static NSImage *menuBarIcon(NSString *role) {
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender { return self.preview; }
 
 - (void)applicationWillTerminate:(NSNotification *)note {
+    _stoppingDisplayTicks = YES;
+    [_displayFallbackTimer invalidate];
+    _displayFallbackTimer = nil;
     if (_localMonitor) [NSEvent removeMonitor:_localMonitor];
     if (_globalMonitor) [NSEvent removeMonitor:_globalMonitor];
     [self stopListening];
+    if (_displayLink) {
+        CVDisplayLinkStop(_displayLink);
+        CVDisplayLinkRelease(_displayLink);
+        _displayLink = NULL;
+    }
+    if (_displayTickSource) { dispatch_source_cancel(_displayTickSource); _displayTickSource = nil; }
+    if (_activity) { [[NSProcessInfo processInfo] endActivity:_activity]; _activity = nil; }
 }
 @end
 
@@ -1342,6 +1454,32 @@ static BOOL checkMotion(void) {
     if (!NSEqualPoints(cloudCenter(launch),cloudPalm(2)) ||
         !NSEqualPoints(cloudCenter(apex),NSMakePoint(469,105)) ||
         !NSEqualPoints(cloudCenter(caught),cloudPalm(4))) return NO;
+    // Exercise every menu delay and role against the original choreography.
+    const NSInteger delays[]={15,30,60,120,300,600};
+    const NSInteger choreography[]={45000,46000,47400,49000,51500,53000,55800,56550,57000,59999,60000};
+    for (size_t d=0;d<sizeof(delays)/sizeof(*delays);d++) for (int hobby=0;hobby<3;hobby++) {
+        PetInteraction reference, configured;
+        PetInteractionInit(&reference,0); PetInteractionInit(&configured,0);
+        reference.hobby=configured.hobby=hobby;
+        reference.randomState=configured.randomState=12345;
+        configured.sleepAfter=delays[d]*1000-3000;
+        for (size_t t=0;t<sizeof(choreography)/sizeof(*choreography);t++) {
+            NSInteger original=choreography[t], adjusted=original+configured.sleepAfter-57000;
+            PetMood a=PetMoodAt(&reference,original,0,0), b=PetMoodAt(&configured,adjusted,0,0);
+            if (a.hobbyPose!=b.hobbyPose || a.drowsy!=b.drowsy || a.sleeping!=b.sleeping ||
+                a.lids!=b.lids || a.armFrom!=b.armFrom || a.armBlend!=b.armBlend ||
+                fabs(a.flight-b.flight)>.0001) return NO;
+            PetPaintedFace fa=PetPickFace(&reference,a,original,NO), fb=PetPickFace(&configured,b,adjusted,NO);
+            if (fa.number!=fb.number || fa.blend!=fb.blend) return NO;
+        }
+        NSInteger sleepAt=delays[d]*1000;
+        if (PetMoodAt(&configured,sleepAt-1,0,0).sleeping ||
+            !PetMoodAt(&configured,sleepAt,0,0).sleeping ||
+            PetMoodAt(&configured,sleepAt+30000,0,0).hobbyPose) return NO;
+        PetStartHold(&configured,sleepAt+1);
+        PetMood held=PetMoodAt(&configured,sleepAt+1000,0,0);
+        if (held.hobbyPose || held.sleeping) return NO;
+    }
     HeadStroke stroke = {0};
     return !sampleStroke(&stroke,NSMakePoint(140,60),1000) &&
            !sampleStroke(&stroke,NSMakePoint(150,60),1100) &&
@@ -1650,6 +1788,7 @@ static int checkBundle(NSURL *references) {
 int main(int argc, const char **argv) {
     @autoreleasepool {
         scaleOptions = @[@50, @75, @100, @125, @150, @200];
+        sleepOptions = @[@15, @30, @60, @120, @300, @600];
         roleIDs = @[@"blue", @"amber", @"frost"];
         roleNames = @[@"DeepSeek", @"Claude", @"Codex"];
         if (argc >= 2 && !strcmp(argv[1], "--check")) {

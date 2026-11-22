@@ -20,7 +20,7 @@ done
 iconutil -c icns "$iconset" -o "$content/Resources/TricolorPet.icns"
 clang -arch x86_64 -arch arm64 -mmacosx-version-min=12.0 -fobjc-arc -O2 -Wall \
     -framework Cocoa -framework CoreGraphics -framework ImageIO -framework ServiceManagement \
-    -framework CoreServices -lz Cat.m PetFrameAtlas.m PetGazeMap.m PetLoginItem.m PetMotion.m \
+    -framework CoreServices -framework CoreVideo -framework QuartzCore -lz Cat.m PetFrameAtlas.m PetGazeMap.m PetMotion.m PetLoginItem.m \
     -o "$content/MacOS/TriColorPet"
 for role in blue amber frost; do
     mkdir "$content/Resources/$role"

@@ -156,7 +156,7 @@ BOOL PetOffHandKey(int symbol) {
 }
 
 void PetInteractionInit(PetInteraction *s, NSInteger now) {
-    *s=(PetInteraction){.lastActivity=now,.wakeAt=-10000,.holdAt=-1,.releaseAt=-10000,
+    *s=(PetInteraction){.lastActivity=now,.sleepAfter=57000,.wakeAt=-10000,.holdAt=-1,.releaseAt=-10000,
         .randomState=arc4random_uniform(UINT32_MAX-1)+1,.nextExpression=-1,.expressionEnds=-1,.mealActivity=-1};
 }
 
@@ -200,19 +200,21 @@ PetMood PetMoodAt(const PetInteraction *s, NSInteger now, double headU, double h
     PetMood m={.gazeGain=1,.heart=-1,.zPhase=-1};
     BOOL held=s->holdAt>=0 && s->releaseAt<s->holdAt;
     NSInteger idle=held ? 0 : now-s->lastActivity;
-    switch (s->hobby) {
-        case PetRice: m.hobbyPose=ricePose(idle); break;
-        case PetReading: m.hobbyPose=bookPose(idle); break;
-        case PetCloud: m.hobbyPose=cloudPose(idle,&m); break;
+    // Hobby choreography ends just before drowsiness, regardless of the chosen delay.
+    NSInteger hobbyTime=idle-s->sleepAfter+57000;
+    if (!held) switch (s->hobby) {
+        case PetRice: m.hobbyPose=ricePose(hobbyTime); break;
+        case PetReading: m.hobbyPose=bookPose(hobbyTime); break;
+        case PetCloud: m.hobbyPose=cloudPose(hobbyTime,&m); break;
     }
-    double drowsy=unitInterval((idle-57000)/3000.0);
-    double sleep=unitInterval((idle-60000)/600.0);
-    m.drowsy=idle>=57000;
-    m.sleeping=idle>=60000;
+    double drowsy=unitInterval((idle-s->sleepAfter)/3000.0);
+    double sleep=unitInterval((idle-s->sleepAfter-3000)/600.0);
+    m.drowsy=idle>=s->sleepAfter;
+    m.sleeping=idle>=s->sleepAfter+3000;
     m.lids=(int)lround(64*(drowsy+sleep));
     m.gazeGain=m.hobbyPose ? 0 : 1-drowsy;
-    m.headY=.65*drowsy+.07*sleep*sin(2*M_PI*(idle-60000)/3200.0);
-    if (m.sleeping) m.zPhase=(int)((idle-60000)%2000)/80;
+    m.headY=.65*drowsy+.07*sleep*sin(2*M_PI*(idle-s->sleepAfter-3000)/3200.0);
+    if (m.sleeping) m.zPhase=(int)((idle-s->sleepAfter-3000)%2000)/80;
 
     NSInteger wake=now-s->wakeAt;
     if (wake>=0 && wake<480) {
@@ -242,9 +244,9 @@ PetMood PetMoodAt(const PetInteraction *s, NSInteger now, double headU, double h
 }
 
 void PetNoteActivity(PetInteraction *s, NSInteger now) {
-    if (now-s->lastActivity>=57000 && !(s->holdAt>=0 && s->releaseAt<s->holdAt)) {
+    if (now-s->lastActivity>=s->sleepAfter && !(s->holdAt>=0 && s->releaseAt<s->holdAt)) {
         PetMood m=PetMoodAt(s,now,0,0);
-        s->wakeRestStage=s->hobby==PetRice ? 0 : MIN(4,1+(int)((now-s->lastActivity-57000)/750));
+        s->wakeRestStage=s->hobby==PetRice ? 0 : MIN(4,1+(int)((now-s->lastActivity-s->sleepAfter)/750));
         s->wakeAt=now;
         s->wakeLids=m.lids;
         s->wakeDrop=m.headY;
@@ -278,9 +280,10 @@ static uint32_t nextRandom(PetInteraction *s) {
 PetPaintedFace PetPickFace(PetInteraction *s, PetMood mood, NSInteger now, BOOL idleHands) {
     PetPaintedFace none={0};
     NSInteger quiet=now-s->lastActivity;
+    NSInteger hobbyTime=quiet-s->sleepAfter+57000;
     if (mood.hobbyPose) {
         if (s->hobby==PetReading) {
-            int expression=mood.hobbyPose==3 ? 3 : mood.hobbyPose==4 || (mood.hobbyPose==2 && quiet>=51000) ? 2 : 1;
+            int expression=mood.hobbyPose==3 ? 3 : mood.hobbyPose==4 || (mood.hobbyPose==2 && hobbyTime>=51000) ? 2 : 1;
             return (PetPaintedFace){expression,64};
         }
         if (s->hobby==PetCloud)
@@ -291,12 +294,12 @@ PetPaintedFace PetPickFace(PetInteraction *s, PetMood mood, NSInteger now, BOOL 
             s->mealChew=(nextRandom(s)&1) ? 4 : 6;
         }
         if (mood.hobbyPose==3) return none;
-        BOOL second=quiet>=50500;
+        BOOL second=hobbyTime>=50500;
         int number=mood.hobbyPose==4 ? (second ? 10-s->mealChew : s->mealChew) :
                                   (second ? 6-s->mealReady : s->mealReady);
         return (PetPaintedFace){number,64};
     }
-    if (!idleHands || quiet<1000 || quiet>=45000 || mood.nuzzleWeight>0) return none;
+    if (!idleHands || quiet<1000 || hobbyTime>=45000 || mood.drowsy || mood.nuzzleWeight>0) return none;
     if (s->nextExpression<0) s->nextExpression=s->lastActivity+4000+nextRandom(s)%4001;
     if (now>=s->nextExpression) {
         int options=s->hobby==PetRice ? 5 : 3;
