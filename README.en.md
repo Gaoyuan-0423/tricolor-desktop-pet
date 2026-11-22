@@ -6,15 +6,15 @@
 
 Three desktop companions for macOS and Windows. Move your mouse and your pet follows the cursor with her eyes, then turns her head. Type a letter and she taps the matching key on her own keyboard. Give her a head pat and she smiles as little hearts float up.
 
-## Download 1.4.1
+## Download 1.4.2
 
 | Platform | Download |
 | --- | --- |
-| macOS 12 or later, Apple silicon and Intel | [Universal macOS ZIP](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.4.1/TricolorPet-1.4.1-macOS-universal.zip) |
-| Windows x64 | [Windows EXE](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.4.1/TricolorPet-1.4.1-Windows-x64.exe) |
-| Source code | [1.4.1 source ZIP](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.4.1/TricolorPet-1.4.1-source.zip) |
+| macOS 12 or later, Apple silicon and Intel | [Universal macOS 1.4.2 ZIP](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.4.2/TricolorPet-1.4.2-macOS-universal.zip) |
+| Windows x64 | [Windows 1.4.1 EXE](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.4.1/TricolorPet-1.4.1-Windows-x64.exe) |
+| Source code | [1.4.2 source ZIP](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.4.2/TricolorPet-1.4.2-source.zip) |
 
-The macOS 1.4.1 app is signed with Developer ID and notarized by Apple. The notarization ticket is stapled to the app. The extracted app passed Gatekeeper verification. [Release notes and SHA-256 checksums](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/tag/v1.4.1)
+Version 1.4.2 updates the Mac app: animations follow the display refresh when available, and the right-click menu lets you choose when your pet falls asleep. Deep sleep uses fewer updates and avoids redundant drawing while keeping the breathing and floating Zs. The pet no longer prevents the Mac from sleeping when idle. The Mac app is signed with Developer ID and notarized by Apple. The Windows download remains the unchanged 1.4.1 build. [Release notes and SHA-256 checksums](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/tag/v1.4.2)
 
 Version 1.4.1 introduces a hand-painted portrait of all three pets. The Mac menu bar shows a whale, sunflower, or little horned dragon for the active pet. Click the icon to open the pet menu. On Windows, the EXE and notification area use the group portrait.
 
@@ -22,7 +22,7 @@ Version 1.4.1 introduces a hand-painted portrait of all three pets. The Mac menu
 
 ## New interactions in 1.4.0
 
-After about 45 seconds without keyboard or mouse input, DeepSeek picks up a bowl of rice, Claude opens her flower-embossed book and turns the pages, and Codex tosses a little blue cloud into the air and catches it. Their expressions change with each activity. At about 60 seconds they close their eyes and drift off. The first keystroke wakes them with a little shake and lights up the matching key. The animation below uses frames drawn by the Mac app with the idle wait shortened.
+With the default timing, after about 45 seconds without keyboard or mouse input, DeepSeek picks up a bowl of rice, Claude opens her flower-embossed book and turns the pages, and Codex tosses a little blue cloud into the air and catches it. Their expressions change with each activity. At about 60 seconds they close their eyes and drift off. The first keystroke wakes them with a little shake and lights up the matching key. The animation below uses frames drawn by the Mac app with the idle wait shortened.
 
 ![The three pets eating rice, reading, and tossing a toy before falling asleep and waking to a keystroke](docs/images/idle-hobbies.gif)
 
@@ -73,6 +73,7 @@ The columns below show the blue, orange and white characters. The top row shows 
 ## Getting started
 
 - **Mac** — Download the universal macOS ZIP, extract it, move `三色桌宠.app` into Applications, then open it. To make your pet respond while you type in other apps, right-click her, choose “开启输入监控…” (Open Input Monitoring), and allow access in System Settings.
+- **Mac sleep delay** — Right-click your pet and choose “入睡等待” to set the wait to 15 or 30 seconds, or 1, 2, 5 or 10 minutes. The default is 1 minute.
 - **Windows** — Save the Windows x64 EXE in a folder where you plan to keep it, then run it.
 - **Both platforms** — Drag your pet to move her. Right-click to switch characters, mute or unmute typing sounds, or change her size from 50% to 200%.
 - **Launch at login (since 1.3.0)** — Right-click your pet and select “登录时启动” to launch her the next time you sign in to this account. The option is off by default. Click it again to turn it off. If macOS asks for approval, the same menu can open Login Items in System Settings.
