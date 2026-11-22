@@ -13,6 +13,7 @@ import (
 	"image/png"
 	"io"
 	"math"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -281,7 +282,7 @@ func fitOrigin(pos, sz point, work rect) point {
 func clearFrameCache() {
 	frameCache = make(map[scene][]byte)
 	cacheOrder = nil
-	currentMasterName, gazeCanvas.frame, last = scene{}, scene{}, scene{}
+	currentMasterName, gazeCanvas.frame, gazeCanvas.hobby, last = scene{}, scene{}, scene{}, scene{}
 	currentMaster = nil
 }
 
@@ -591,16 +592,125 @@ type expression struct {
 	heart  int // 0=absent, 1..6=the exported heart phases
 }
 type scene struct {
-	hand string
-	face expression
+	hand     string
+	face     expression
+	desk     deskMouse
+	zzz      int // 1..25 in the sleeping cycle
+	wakeRest int // 0=awake, 64..256 are the four accessory poses
+	mood     moodLayer
+	toy      toyPose
+	armTween int // 0..256 between the two measured palm poses
 }
+type moodLayer struct{ number, weight int }
+type toyPose struct {
+	visible bool
+	x, y    int // center in master pixels
+}
+
+type toyLayer struct {
+	pixels []byte
+	bounds image.Rectangle
+	desk   []byte
+	arms   [5]armSprite
+}
+
+type armSprite struct {
+	pixels []byte
+	bounds image.Rectangle
+}
+
+var palms = [5]image.Point{1: {433, 247}, 2: {436, 207}, 4: {437, 291}}
+
+func palmCenter(from, to, weight int) (float64, float64) {
+	a, b := palms[from], palms[to]
+	return float64(a.X*(256-weight)+b.X*weight) / 256, float64(a.Y*(256-weight)+b.Y*weight) / 256
+}
+
+// Coordinates use signed 1/256-pixel inverse sampling with transparent borders.
+func (s armSprite) sample(x256, y256 int) (color [4]int) {
+	x, y := x256>>8, y256>>8
+	if x+1 < s.bounds.Min.X || y+1 < s.bounds.Min.Y || x >= s.bounds.Max.X || y >= s.bounds.Max.Y {
+		return
+	}
+	fx, fy := x256&255, y256&255
+	for row, wy := range [2]int{256 - fy, fy} {
+		for col, wx := range [2]int{256 - fx, fx} {
+			xx, yy := x+col, y+row
+			if wx*wy == 0 || !image.Pt(xx, yy).In(s.bounds) {
+				continue
+			}
+			i := 4 * ((yy-s.bounds.Min.Y)*s.bounds.Dx() + xx - s.bounds.Min.X)
+			for c := range color {
+				color[c] += int(s.pixels[i+c]) * wx * wy
+			}
+		}
+	}
+	for c := range color {
+		color[c] = (color[c] + 32768) >> 16
+	}
+	return
+}
+
+func (l *toyLayer) tweenArms(dst []byte, hand string, weight int) {
+	from, to := 1, 2
+	if hand == "toss4" {
+		from, to = 4, 1
+	}
+	cx, cy := palmCenter(from, to, weight)
+	a, b := l.arms[from], l.arms[to]
+	bounds := a.bounds.Union(b.bounds)
+	bounds = image.Rect(bounds.Min.X-5, bounds.Min.Y-45, bounds.Max.X+5, bounds.Max.Y+45).Intersect(image.Rect(0, 0, masterWidth, masterHeight))
+	for x := bounds.Min.X; x < bounds.Max.X; x++ {
+		t := clampUnit(float64(x-365) / 56)
+		g := 256 * t * t * (3 - 2*t)
+		ax := x*256 - int(math.Round((cx-float64(palms[from].X))*g))
+		bx := x*256 - int(math.Round((cx-float64(palms[to].X))*g))
+		ay := int(math.Round((cy - float64(palms[from].Y)) * g))
+		by := int(math.Round((cy - float64(palms[to].Y)) * g))
+		for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+			ca, cb := a.sample(ax, y*256-ay), b.sample(bx, y*256-by)
+			alpha := (ca[3]*(256-weight) + cb[3]*weight + 128) >> 8
+			if alpha == 0 {
+				continue
+			}
+			i := 4 * (y*masterWidth + x)
+			for c := 0; c < 4; c++ {
+				s := (ca[c]*(256-weight) + cb[c]*weight + 128) >> 8
+				dst[i+c] = byte(min(255, s+(int(dst[i+c])*(255-alpha)+127)/255))
+			}
+		}
+	}
+}
+
+var toyArt *toyLayer
+
+func (l *toyLayer) draw(dst []byte, pose toyPose) {
+	offset := image.Pt(pose.x-300, pose.y-270)
+	bounds := l.bounds.Add(offset).Intersect(image.Rect(0, 0, masterWidth, masterHeight))
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			i := 4 * (y*masterWidth + x)
+			j := 4 * ((y-offset.Y)*masterWidth + x - offset.X)
+			a := int(l.pixels[j+3])
+			if a == 0 {
+				continue
+			}
+			for c := 0; c < 4; c++ {
+				dst[i+c] = byte(min(255, int(l.pixels[j+c])+(int(dst[i+c])*(255-a)+127)/255))
+			}
+		}
+	}
+}
+
 type expressionLayers struct {
 	blinkHalf, blinkFull, smileHalf, smileFull []byte
 	hearts                                     [6][]byte
+	moods                                      [6][]byte
 }
 
 var faceRect = image.Rect(208, 108, 389, 254)
 var heartRect = image.Rect(420, 39, 496, 162)
+var moodRect = image.Rect(230, 123, 374, 243)
 
 func extractRegion(full []byte, rect image.Rectangle) []byte {
 	stride := rect.Dx() * 4
@@ -612,7 +722,7 @@ func extractRegion(full []byte, rect image.Rectangle) []byte {
 	return out
 }
 
-func loadExpressionLayers(atlas *frameAtlas) *expressionLayers {
+func loadExpressionLayers(atlas *frameAtlas, moodCount int) *expressionLayers {
 	l := &expressionLayers{}
 	temp := make([]byte, masterWidth*masterHeight*4)
 	for _, asset := range []struct {
@@ -632,7 +742,30 @@ func loadExpressionLayers(atlas *frameAtlas) *expressionLayers {
 		}
 		l.hearts[i] = extractRegion(temp, heartRect)
 	}
+	for i := 0; i < moodCount; i++ {
+		if !atlas.copyFrame(fmt.Sprintf("mood%d", i+1), temp) {
+			return nil
+		}
+		l.moods[i] = extractRegion(temp, moodRect)
+	}
 	return l
+}
+
+func (l *expressionLayers) applyMood(full []byte, mood moodLayer, meal bool) {
+	art := l.moods[mood.number-1]
+	next := 0
+	for y := moodRect.Min.Y; y < moodRect.Max.Y; y++ {
+		for x := moodRect.Min.X; x < moodRect.Max.X; x++ {
+			i := 4 * (y*masterWidth + x)
+			// Leave painted chopsticks, rice and the mouth in front of the face.
+			if !meal || bytes.Equal(full[i:i+4], baseFrame[i:i+4]) {
+				for c := 0; c < 4; c++ {
+					full[i+c] = byte((int(full[i+c])*(64-mood.weight) + int(art[next+c])*mood.weight + 32) / 64)
+				}
+			}
+			next += 4
+		}
+	}
 }
 
 func (l *expressionLayers) apply(full []byte, face expression) {
@@ -666,10 +799,237 @@ func (l *expressionLayers) apply(full []byte, face expression) {
 	}
 }
 
+type deskMouse struct {
+	layer    int // 1/2 are entry or release; 3 is the separate grip and mouse.
+	quadrant int
+	dx, dy   int // eighths of a master pixel
+}
+type desktopLayers struct {
+	free, pointer []byte
+	approach      [2][4][]byte
+	wrists        [4][]byte
+	rest          [5][]byte
+	pointerBounds image.Rectangle
+}
+
+var deskArt *desktopLayers
+var deskArea = image.Rect(0, keyPatchY, 314, masterHeight)
+var accessoryArea = image.Rect(426, 300, masterWidth, 430)
+var deskTarget, deskOffset direction
+var deskUpdated, deskMoved time.Time
+
+func alphaBounds(pixels []byte) image.Rectangle {
+	minX, minY, maxX, maxY := masterWidth, masterHeight, 0, 0
+	for y := 0; y < masterHeight; y++ {
+		for x := 0; x < masterWidth; x++ {
+			if pixels[4*(y*masterWidth+x)+3] > 0 {
+				minX, minY, maxX, maxY = min(minX, x), min(minY, y), max(maxX, x+1), max(maxY, y+1)
+			}
+		}
+	}
+	if minX >= maxX || minY >= maxY {
+		return image.Rectangle{}
+	}
+	return image.Rect(minX, minY, maxX, maxY)
+}
+
+func loadDesktopLayers(atlas *frameAtlas) *desktopLayers {
+	// Only the mouse-side rectangle is needed for the desk and approach frames.
+	tmp := make([]byte, masterWidth*masterHeight*4)
+	if !atlas.copyFrame("deskFree", tmp) {
+		return nil
+	}
+	d := &desktopLayers{free: extractRegion(tmp, deskArea)}
+	d.pointer = make([]byte, len(tmp))
+	if !atlas.copyFrame("pointer", d.pointer) {
+		return nil
+	}
+	bounds := alphaBounds(d.pointer)
+	if bounds.Empty() {
+		return nil
+	}
+	d.pointerBounds = image.Rect(bounds.Min.X-13, bounds.Min.Y-9, bounds.Max.X+13, bounds.Max.Y+9).Intersect(image.Rect(0, 0, masterWidth, masterHeight))
+	for stage := range d.rest {
+		name := "idle0"
+		if stage > 0 {
+			name = fmt.Sprintf("rest%d", stage)
+		}
+		if !atlas.copyFrame(name, tmp) {
+			return nil
+		}
+		d.rest[stage] = extractRegion(tmp, accessoryArea)
+	}
+	for i := range d.wrists {
+		if !atlas.copyFrame(fmt.Sprintf("wrist%d", i), tmp) {
+			return nil
+		}
+		d.wrists[i] = extractRegion(tmp, deskArea)
+	}
+	for level := 1; level <= 2; level++ {
+		for q := 0; q < 4; q++ {
+			if !atlas.copyFrame(fmt.Sprintf("mouse%d%d", level, q), tmp) {
+				return nil
+			}
+			d.approach[level-1][q] = extractRegion(tmp, deskArea)
+		}
+	}
+	return d
+}
+
+// The first waking keystroke keeps its contact and highlight. Move only the
+// accessory pixels where the action still has the neutral background.
+func (d *desktopLayers) recoverAccessories(full []byte, level int) {
+	low := (level - 1) / 64
+	weight := level - low*64
+	a, b := d.rest[low], d.rest[low+1]
+	row := 0
+	for y := accessoryArea.Min.Y; y < accessoryArea.Max.Y; y++ {
+		for x := accessoryArea.Min.X; x < accessoryArea.Max.X; x++ {
+			i := 4 * (y*masterWidth + x)
+			if bytes.Equal(full[i:i+4], d.rest[0][row:row+4]) {
+				for c := 0; c < 4; c++ {
+					full[i+c] = byte((int(a[row+c])*(64-weight) + int(b[row+c])*weight + 32) / 64)
+				}
+			}
+			row += 4
+		}
+	}
+}
+
+func updateDeskMotion(now time.Time, p point) {
+	if size.X == 0 || size.Y == 0 {
+		return
+	}
+	if p != cur {
+		if now.Sub(deskMoved) >= 850*time.Millisecond {
+			deskTarget, deskOffset = direction{}, direction{}
+		}
+		dx := float64(p.X-cur.X) * logicalWidth / float64(size.X)
+		dy := float64(p.Y-cur.Y) * logicalHeight / float64(size.Y)
+		deskTarget.x = max(-12, min(12, deskTarget.x+.16*dx))
+		deskTarget.y = max(-8, min(8, deskTarget.y+.16*dy))
+		deskMoved = now
+	}
+	dt := now.Sub(deskUpdated).Seconds()
+	if deskUpdated.IsZero() {
+		dt = 1. / 60
+	}
+	if dt > 0 {
+		deskOffset = easeDirection(deskOffset, deskTarget, dt, .065)
+		deskUpdated = now
+	}
+}
+
+func desktopAt(now time.Time, level int) deskMouse {
+	if level == 0 {
+		return deskMouse{}
+	}
+	d := deskMouse{layer: level, quadrant: quadrant}
+	if level < 3 {
+		return d
+	}
+	entry := int64(95)
+	if bridgeToMouse {
+		entry = 40
+	}
+	weight := max(0., min(1., float64(now.Sub(mouseStart).Milliseconds()-entry)/35, float64(690-now.Sub(mouseAt).Milliseconds())/65))
+	d.dx = int(math.Round(deskOffset.x * weight * 8))
+	d.dy = int(math.Round(deskOffset.y * weight * 8))
+	return d
+}
+
+func (d *desktopLayers) apply(full []byte, motion deskMouse, concurrentKey bool) {
+	back := d.free
+	if motion.layer < 0 {
+		back = d.wrists[-motion.layer-1]
+	} else if motion.layer < 3 {
+		back = d.approach[motion.layer-1][motion.quadrant]
+	}
+	for y := deskArea.Min.Y; y < deskArea.Max.Y; y++ {
+		i := 4 * (y*masterWidth + deskArea.Min.X)
+		row := 4 * (y - deskArea.Min.Y) * deskArea.Dx()
+		if !concurrentKey {
+			copy(full[i:i+deskArea.Dx()*4], back[row:row+deskArea.Dx()*4])
+			continue
+		}
+		for x := 0; x < deskArea.Dx(); x++ {
+			off := i + 4*x
+			if bytes.Equal(full[off:off+4], baseFrame[off:off+4]) {
+				copy(full[off:off+4], back[row+4*x:row+4*x+4])
+			}
+		}
+	}
+	if motion.layer != 3 {
+		return
+	}
+	// Body-side attachment stays put, while the fingers and mouse share the
+	// same rigid offset. Sample premultiplied sprites before source-over.
+	for y := d.pointerBounds.Min.Y; y < d.pointerBounds.Max.Y; y++ {
+		f := max(0., min(1., float64(y-312)/78))
+		f = f * f * (3 - 2*f)
+		shiftX := int(math.Round(float64(motion.dx) * 32 * f))
+		shiftY := int(math.Round(float64(motion.dy) * 32 * f))
+		paintSpriteRow(full, d.pointer, y, d.pointerBounds.Min.X, d.pointerBounds.Max.X, shiftX, shiftY)
+	}
+}
+
+func paintSpriteRow(full, sprite []byte, y, x0, x1, shiftX, shiftY int) {
+	sy := y*256 - shiftY
+	top := sy >> 8
+	fy := sy & 255
+	for x := x0; x < x1; x++ {
+		sx := x*256 - shiftX
+		left := sx >> 8
+		fx := sx & 255
+		var sample [4]int
+		for row := 0; row < 2; row++ {
+			yy := top + row
+			if yy < 0 || yy >= masterHeight {
+				continue
+			}
+			wy := 256 - fy
+			if row != 0 {
+				wy = fy
+			}
+			for col := 0; col < 2; col++ {
+				xx := left + col
+				if xx < 0 || xx >= masterWidth {
+					continue
+				}
+				wx := 256 - fx
+				if col != 0 {
+					wx = fx
+				}
+				w := wx * wy
+				at := 4 * (yy*masterWidth + xx)
+				for c := 0; c < 4; c++ {
+					sample[c] += int(sprite[at+c]) * w
+				}
+			}
+		}
+		alpha := (sample[3] + 32768) >> 16
+		if alpha == 0 {
+			continue
+		}
+		dst := 4 * (y*masterWidth + x)
+		for c := 0; c < 4; c++ {
+			src := (sample[c] + 32768) >> 16
+			full[dst+c] = byte(min(255, src+(int(full[dst+c])*(255-alpha)+127)/255))
+		}
+	}
+}
+
 func selectCharacter(index int) bool {
 	atlas := loadAtlas(index)
 	if atlas == nil {
 		return false
+	}
+	role := characters[index].id
+	prefix := map[string]string{"blue": "rice", "amber": "book", "frost": "toss"}[role]
+	for i := 1; i <= 4; i++ {
+		if atlas.frames[fmt.Sprintf("%s%d", prefix, i)].height != masterHeight {
+			return false
+		}
 	}
 	idle := make([]byte, 4*masterWidth*masterHeight)
 	if !atlas.copyFrame("idle0", idle) {
@@ -679,11 +1039,46 @@ func selectCharacter(index int) bool {
 	if rig == nil {
 		return false
 	}
-	parts := loadExpressionLayers(atlas)
+	moodCount := 3
+	if role == "blue" {
+		moodCount = 6
+	}
+	parts := loadExpressionLayers(atlas, moodCount)
 	if parts == nil {
 		return false
 	}
-	character, activeAtlas, activeRig, baseFrame, layers = index, atlas, rig, idle, parts
+	desk := loadDesktopLayers(atlas)
+	if desk == nil {
+		return false
+	}
+	var toy *toyLayer
+	if role == "frost" {
+		toy = &toyLayer{pixels: make([]byte, len(idle))}
+		if !atlas.copyFrame("toy", toy.pixels) {
+			return false
+		}
+		toy.bounds = alphaBounds(toy.pixels)
+		if toy.bounds.Empty() {
+			return false
+		}
+		toy.desk = make([]byte, len(idle))
+		if !atlas.copyFrame("tossDesk", toy.desk) {
+			return false
+		}
+		tmp := make([]byte, len(idle))
+		for _, i := range []int{1, 2, 4} {
+			if !atlas.copyFrame(fmt.Sprintf("tossArm%d", i), tmp) {
+				return false
+			}
+			bounds := alphaBounds(tmp)
+			if bounds.Empty() {
+				return false
+			}
+			toy.arms[i] = armSprite{extractRegion(tmp, bounds), bounds}
+		}
+	}
+	toyArt = toy
+	character, activeAtlas, activeRig, baseFrame, layers, deskArt = index, atlas, rig, idle, parts, desk
 	smileAt, patAt, resumeAt = time.Time{}, time.Time{}, time.Time{}
 	stroke = headStroke{}
 	clearFrameCache()
@@ -691,13 +1086,19 @@ func selectCharacter(index int) bool {
 	return true
 }
 
+var currentGazeMask []bool
+
 func masterFrame(view scene) []byte {
+	view.toy = toyPose{} // the independent plush stays in front of the warped face
 	if view == currentMasterName && currentMaster != nil {
 		return currentMaster
 	}
 	name := view.hand
 	source := baseFrame
-	if name != "idle0" {
+	if view.armTween > 0 {
+		source = bytes.Clone(toyArt.desk)
+		toyArt.tweenArms(source, name, view.armTween)
+	} else if name != "idle0" {
 		source = make([]byte, len(baseFrame))
 		dst := source
 		if strings.HasPrefix(name, "key") {
@@ -709,11 +1110,35 @@ func masterFrame(view scene) []byte {
 			return nil
 		}
 	}
-	if view.face != (expression{}) {
-		if name == "idle0" {
-			source = bytes.Clone(baseFrame)
+	if name == "idle0" && (view.face != (expression{}) || view.desk.layer != 0 || view.zzz > 0 || view.wakeRest > 0 || view.mood.number > 0) {
+		source = bytes.Clone(baseFrame)
+	}
+	if view.desk.layer != 0 {
+		deskArt.apply(source, view.desk, strings.HasPrefix(name, "key"))
+	}
+	if view.wakeRest > 0 {
+		deskArt.recoverAccessories(source, view.wakeRest)
+	}
+	if strings.HasPrefix(name, "book") || strings.HasPrefix(name, "toss") {
+		r := activeRig
+		if len(currentGazeMask) != r.w*r.h {
+			currentGazeMask = make([]bool, r.w*r.h)
 		}
+		for y := 0; y < r.h; y++ {
+			for x := 0; x < r.w; x++ {
+				i := 4 * ((r.y+y)*masterWidth + r.x + x)
+				currentGazeMask[y*r.w+x] = bytes.Equal(source[i:i+4], baseFrame[i:i+4])
+			}
+		}
+	}
+	if view.mood.number > 0 {
+		layers.applyMood(source, view.mood, !strings.HasPrefix(name, "idle"))
+	}
+	if view.face != (expression{}) {
 		layers.apply(source, view.face)
+	}
+	if view.zzz > 0 {
+		drawSleepingLetters(source, view.zzz)
 	}
 	currentMasterName, currentMaster = view, source
 	return source
@@ -726,6 +1151,10 @@ func framePixels(name scene) []byte {
 	source := masterFrame(name)
 	if source == nil {
 		return nil
+	}
+	if name.toy.visible {
+		source = bytes.Clone(source)
+		toyArt.draw(source, name.toy)
 	}
 	pixels := scaledFrame(source)
 	if len(pixels) > cacheBudget {
@@ -745,16 +1174,36 @@ func framePixels(name scene) []byte {
 // of a master pixel, giving exact 1/512-pixel coordinates before interpolation.
 type gazePose struct{ headX, headY, eyeX, eyeY int }
 
-func (s *gazeState) pose(view scene) gazePose {
+func (s *gazeState) poseAt(view scene, now time.Time) gazePose {
+	if strings.HasPrefix(view.hand, "rice") {
+		return gazePose{} // bowl, chopsticks, face and gaze share one painted pose
+	}
+	head, eyes := posture(now, s.head, s.eyes)
+	if strings.HasPrefix(view.hand, "book") {
+		sweep := math.Sin(2 * math.Pi * float64(idleSince(now).Milliseconds()-45000) / 1600)
+		head, eyes = direction{.04 * sweep, .12}, direction{.14 * sweep, .35}
+	}
+	if view.toy.visible {
+		u := max(-1., min(1., float64(view.toy.x-300)/175))
+		v := max(-1., min(1., float64(view.toy.y-160)/130))
+		head, eyes = direction{.14 * u, .14 * v}, direction{.38 * u, .45 * v}
+	}
+	if (strings.HasPrefix(view.hand, "book") && view.mood.number == 2) || (view.toy.visible && view.mood.number == 3) {
+		eyes = direction{} // smiling crescent lids have no visible iris
+	}
 	q := func(v float64) int { return int(math.Round(v * 64)) }
-	p := gazePose{headX: q(s.head.x), headY: q(s.head.y)}
+	p := gazePose{headX: q(head.x), headY: q(head.y)}
 	amount := view.face.amount
 	eyeWeight := float64(192-2*amount) / 192
 	if amount > 64 {
 		eyeWeight = float64(128-amount) / 192
 	}
-	p.eyeX = int(math.Round(float64(q(s.eyes.x)) * eyeWeight))
-	p.eyeY = int(math.Round(float64(q(s.eyes.y)) * eyeWeight))
+	if view.mood.weight > 0 && strings.HasPrefix(view.hand, "idle") {
+		// The painted eyes already contain the direction and lid shape.
+		eyeWeight *= float64(64-view.mood.weight) / 64
+	}
+	p.eyeX = int(math.Round(float64(q(eyes.x)) * eyeWeight))
+	p.eyeY = int(math.Round(float64(q(eyes.y)) * eyeWeight))
 	return p
 }
 
@@ -790,10 +1239,13 @@ func loadGazeRig(index int) *gazeRig {
 	return r
 }
 
-func (r *gazeRig) warp(src, dst []byte, pose gazePose) {
+func (r *gazeRig) warp(src, dst []byte, pose gazePose, allowed []bool) {
 	for row := 0; row < r.h; row++ {
 		y := r.y + row
 		for col := 0; col < r.w; col++ {
+			if allowed != nil && !allowed[row*r.w+col] {
+				continue
+			}
 			i := (row*r.w + col) * 6
 			c := r.field[i : i+6]
 			if c[0]|c[1]|c[2]|c[3]|c[4]|c[5] == 0 {
@@ -838,6 +1290,25 @@ func (r *gazeRig) warp(src, dst []byte, pose gazePose) {
 type gazeWork struct {
 	frame              scene
 	master, horizontal []byte
+	hobby              scene
+	neutral            []byte
+}
+
+// A book, raised hand or sleeve that crosses the gaze region must keep its
+// painted silhouette. The inverse sampler reads the prop-free neutral face.
+func (work *gazeWork) hobbySource(view scene) []byte {
+	key := scene{hand: view.hand, mood: view.mood}
+	if work.hobby != key {
+		if len(work.neutral) != len(baseFrame) {
+			work.neutral = make([]byte, len(baseFrame))
+		}
+		copy(work.neutral, baseFrame)
+		if view.mood.number > 0 {
+			layers.applyMood(work.neutral, view.mood, false)
+		}
+		work.hobby = key
+	}
+	return work.neutral
 }
 
 func affectedRange(axis []samples, low, high int) (int, int) {
@@ -861,14 +1332,21 @@ func (work *gazeWork) render(dst []byte, name scene, pose gazePose) {
 	if source == nil {
 		return
 	}
-	if work.frame != name {
+	if work.frame != name || name.toy.visible {
 		if len(work.master) != len(source) {
 			work.master = make([]byte, len(source))
 		}
 		copy(work.master, source)
 		work.frame = name
 	}
-	r.warp(source, work.master, pose)
+	var allowed []bool
+	if name.toy.visible || strings.HasPrefix(name.hand, "book") {
+		source, allowed = work.hobbySource(name), currentGazeMask
+	}
+	r.warp(source, work.master, pose, allowed)
+	if name.toy.visible {
+		toyArt.draw(work.master, name.toy)
+	}
 	if size.X == masterWidth && size.Y == masterHeight {
 		for row := r.y; row < r.y+r.h; row++ {
 			start := 4 * (row*masterWidth + r.x)
@@ -907,14 +1385,15 @@ func (work *gazeWork) render(dst []byte, name scene, pose gazePose) {
 }
 
 func paint(name scene) {
-	pose := gaze.pose(name)
+	now := time.Now()
+	pose := gaze.poseAt(name, now)
 	if bits == nil || baseFrame == nil || (name == last && pose == lastPose) {
 		return
 	}
 	pixels := framePixels(name)
 	if pixels == nil {
 		name = scene{hand: "idle0"}
-		pose = gaze.pose(name)
+		pose = gaze.poseAt(name, now)
 		if name == last && pose == lastPose {
 			return
 		}
@@ -973,7 +1452,7 @@ const (
 )
 
 var keyMode keyMotion
-var mouseRequested, bridgeToMouse bool
+var mouseRequested, bridgeToMouse, returningToMouse bool
 var startWrist, contactMS int
 var contactTimer *time.Timer
 var contactTicket uintptr
@@ -1030,10 +1509,18 @@ func typingHand(age int64) string {
 	}
 	return fmt.Sprintf("key%d-%d", symbol, phase)
 }
+func keyboardLeft(v int) bool {
+	return v == 32 || strings.ContainsRune("12345QWERTASDFGZXCVB", rune(v))
+}
+
 func recordMouse(now time.Time) {
-	if !mouseRequested || now.Sub(mouseAt) >= 850*time.Millisecond {
+	if returningToMouse && !now.Before(mouseStart) {
+		returningToMouse = false
+	}
+	if returningToMouse || !mouseRequested || now.Sub(mouseAt) >= 850*time.Millisecond {
+		returningToMouse = false
 		mouseStart = now
-		bridgeToMouse = !keyAt.IsZero() && now.Sub(keyAt).Milliseconds() < keyDuration()
+		bridgeToMouse = !keyboardLeft(symbol) && !keyAt.IsZero() && now.Sub(keyAt).Milliseconds() < keyDuration()
 		if bridgeToMouse {
 			earliest := keyAt.Add(time.Duration(contactBeforeMouse()) * time.Millisecond)
 			if mouseStart.Before(earliest) {
@@ -1044,7 +1531,7 @@ func recordMouse(now time.Time) {
 	mouseAt, mouseRequested = now, true
 }
 
-func handFrame(now time.Time) string {
+func mouseHand(now time.Time) string {
 	mouseAge := now.Sub(mouseAt).Milliseconds()
 	if mouseRequested && !now.Before(mouseStart) && mouseAge < 850 {
 		reach := now.Sub(mouseStart).Milliseconds()
@@ -1056,6 +1543,16 @@ func handFrame(now time.Time) string {
 		}
 		return fmt.Sprintf("mouse%d%d", mouseStage(reach, mouseAge), quadrant)
 	}
+	return ""
+}
+
+func handFrame(now time.Time) string {
+	if age := now.Sub(keyAt).Milliseconds(); keyboardLeft(symbol) && !keyAt.IsZero() && age < keyDuration() {
+		return typingHand(age)
+	}
+	if m := mouseHand(now); m != "" {
+		return m
+	}
 	if age := now.Sub(keyAt).Milliseconds(); !keyAt.IsZero() && age < keyDuration() {
 		return typingHand(age)
 	}
@@ -1065,17 +1562,20 @@ func handFrame(now time.Time) string {
 func beginKey(v int, now time.Time) {
 	previous := handFrame(now)
 	gap := now.Sub(keyAt).Milliseconds()
-	toMouse := mouseRequested && bridgeToMouse && !now.Before(mouseStart)
+	grip := mouseHand(now)
+	onMouse := strings.HasPrefix(grip, "mouse")
+	onWrist := mouseRequested && bridgeToMouse && !now.Before(mouseStart) && strings.HasPrefix(previous, "wrist")
+	leavingConcurrentGrip := !keyboardLeft(v) && keyboardLeft(symbol) && (onMouse || onWrist)
 	contactMS = 45
 	switch {
-	case !keyAt.IsZero() && gap <= 150:
+	case !keyAt.IsZero() && gap <= 150 && !leavingConcurrentGrip:
 		keyMode = rapidKey
 		if v == symbol && gap < 45 {
 			contactMS = max(12, int(gap/2))
 		}
-	case strings.HasPrefix(previous, "mouse"):
+	case !keyboardLeft(v) && onMouse:
 		keyMode = fromMouseKey
-		switch previous[5] {
+		switch grip[5] {
 		case '1':
 			startWrist = 3
 		case '2':
@@ -1083,14 +1583,20 @@ func beginKey(v int, now time.Time) {
 		default:
 			startWrist = 0
 		}
-	case strings.HasPrefix(previous, "wrist") && toMouse:
+	case !keyboardLeft(v) && onWrist:
 		keyMode = fromMouseKey
 		startWrist = int(previous[5] - '0')
 	default:
 		keyMode = standaloneKey
 	}
 	keyAt, symbol = now, v
-	mouseRequested, bridgeToMouse = false, false
+	if !keyboardLeft(v) {
+		// The right hand returns to a recently used mouse when this keystroke
+		// finishes. This animation does not extend the last physical movement.
+		returningToMouse = mouseRequested && now.Sub(mouseAt) < 850*time.Millisecond
+		mouseRequested, bridgeToMouse = returningToMouse, returningToMouse
+		mouseStart = now.Add(time.Duration(keyDuration()) * time.Millisecond)
+	}
 }
 
 func mixAmount(a, b int, elapsed, duration int64) int {
@@ -1163,10 +1669,451 @@ func faceAt(now time.Time) expression {
 	return expression{amount: amount}
 }
 
-func animationFrame(now time.Time) scene {
-	return scene{hand: handFrame(now), face: faceAt(now)}
+type restState struct {
+	drowsy, asleep float64
+	drop           float64
+	level          int
 }
 
+var lastActivity, wakeAt time.Time
+var wakeLevel, wakeStage int
+var wakeDrop, wakeDrowsy float64
+var wakingFromSleep bool
+var pressTime, nuzzleAt, nuzzleReleased time.Time
+var nuzzleEndWeight float64
+var nuzzleCursor direction
+var lastInputStamp uint32
+var haveInputStamp bool
+
+func clampUnit(v float64) float64 { return max(0., min(1., v)) }
+
+func idleSince(now time.Time) time.Duration {
+	if lastActivity.IsZero() {
+		return now.Sub(started)
+	}
+	return now.Sub(lastActivity)
+}
+
+const drowsyAt int64 = 57000
+
+func ricePose(idleMS int64) string {
+	if idleMS < 45000 || idleMS >= 56550 {
+		return ""
+	}
+	for _, beat := range [...]struct {
+		until int64
+		pose  string
+	}{
+		{47400, "rice1"}, {48550, "rice2"}, {49400, "rice3"}, {50500, "rice4"},
+		{51200, "rice3"}, {52250, "rice2"}, {53100, "rice3"}, {54500, "rice4"},
+		{55200, "rice3"}, {55950, "rice2"}, {56550, "rice1"},
+	} {
+		if idleMS < beat.until {
+			return beat.pose
+		}
+	}
+	return ""
+}
+
+func bookPose(idle int64) string {
+	switch {
+	case idle < 46300:
+		return "book1"
+	case idle < 48700:
+		return "book2"
+	case idle < 49500:
+		return "book3"
+	case idle < 52300:
+		return "book2"
+	case idle < 53100:
+		return "book3"
+	case idle < 55600:
+		return "book2"
+	default:
+		return "book4"
+	}
+}
+
+// Master-pixel centers are measured at the drawn palm. The quadratic
+// flight clears the head to its right and returns to the receiving palm.
+func tossScene(idle int64) (string, toyPose, int) {
+	x, y := 433., 247.
+	weight := 0
+	name := "toss1"
+	if idle >= 46200 && idle < 55200 {
+		age := (idle - 46200) % 3000
+		switch {
+		case age < 380:
+		case age < 620:
+			name = "toss2"
+		case age < 1550:
+			name = "toss3"
+		case age < 1940:
+			name = "toss4"
+		}
+		switch {
+		case age < 380:
+			t := float64(age) / 380
+			t = t * t * (3 - 2*t)
+			weight = int(math.Round(256 * t))
+			x, y = palmCenter(1, 2, weight)
+		case age < 1670:
+			t := float64(age-380) / 1290
+			a := 1 - t
+			x = a*a*436 + 2*a*t*501.5 + t*t*437
+			y = a*a*207 - 2*a*t*39 + t*t*291
+		case age < 1940:
+			t := float64(age-1670) / 270
+			t = t * t * (3 - 2*t)
+			weight = int(math.Round(256 * t))
+			x, y = palmCenter(4, 1, weight)
+		}
+	}
+	return name, toyPose{true, int(math.Round(x)), int(math.Round(y))}, weight
+}
+
+type moodBeat struct {
+	start, end int64
+	number     int
+}
+
+var moodRandom = rand.New(rand.NewSource(time.Now().UnixNano()))
+var quietMoods struct {
+	started                       time.Time
+	beats                         []moodBeat
+	role, anticipation, enjoyment int
+	lastShown                     [3]int
+}
+
+// Plan once per quiet spell. Refreshes and contact-frame prewarming must not
+// reroll a face while a pose is on screen or a bite is in progress.
+func activityMood(idle int64, hobby string) moodLayer {
+	if idle < 4000 {
+		return moodLayer{}
+	}
+	since := lastActivity
+	if since.IsZero() {
+		since = started
+	}
+	if quietMoods.started != since || quietMoods.role != character {
+		quietMoods.started, quietMoods.role = since, character
+		quietMoods.beats = quietMoods.beats[:0]
+		previous := quietMoods.lastShown[character]
+		count := 3
+		if characters[character].id == "blue" {
+			count = 5
+		}
+		var end int64
+		for {
+			start := end + 4000 + int64(moodRandom.Intn(4001))
+			if start >= 45000 {
+				break
+			}
+			end = start + 1200 + int64(moodRandom.Intn(801))
+			if end > 45000 {
+				break
+			}
+			var kind int
+			if previous == 0 {
+				kind = 1 + moodRandom.Intn(count)
+			} else {
+				kind = 1 + (previous+moodRandom.Intn(count-1))%count
+			}
+			quietMoods.beats = append(quietMoods.beats, moodBeat{start, end, kind})
+			previous = kind
+		}
+		quietMoods.anticipation, quietMoods.enjoyment = moodRandom.Intn(2), moodRandom.Intn(2)
+	}
+	if hobby != "" {
+		switch hobby {
+		case "book1", "book2":
+			if idle >= 51000 {
+				return moodLayer{2, 64}
+			}
+			return moodLayer{1, 64}
+		case "book3", "toss4":
+			return moodLayer{3, 64}
+		case "book4":
+			return moodLayer{2, 64}
+		case "toss1":
+			return moodLayer{1, 64}
+		case "toss2", "toss3":
+			return moodLayer{2, 64}
+		}
+		pair := [2]int{1, 5}
+		choice := quietMoods.anticipation
+		switch hobby {
+		case "rice4":
+			pair, choice = [2]int{4, 6}, quietMoods.enjoyment
+		case "rice3":
+			return moodLayer{}
+		}
+		if idle >= 50500 {
+			choice = 1 - choice
+		}
+		return moodLayer{pair[choice], 64}
+	}
+	for _, beat := range quietMoods.beats {
+		if idle < beat.start {
+			break
+		}
+		if idle < beat.end {
+			weight := mixAmount(0, 64, min(idle-beat.start, beat.end-idle), 150)
+			if weight > 0 {
+				quietMoods.lastShown[character] = beat.number
+				return moodLayer{beat.number, weight}
+			}
+		}
+	}
+	return moodLayer{}
+}
+
+func resting(now time.Time) restState {
+	if !nuzzleAt.IsZero() && nuzzleReleased.IsZero() {
+		return restState{}
+	}
+	idle := idleSince(now).Milliseconds()
+	d := clampUnit(float64(idle-drowsyAt) / float64(60000-drowsyAt))
+	sleep := clampUnit(float64(idle-60000) / 600)
+	r := restState{drowsy: d, asleep: sleep, level: int(math.Round(64*d + 64*sleep))}
+	r.drop = .65*d + .07*sleep*math.Sin(2*math.Pi*float64(idle-60000)/3200)
+	return r
+}
+func userActivity(now time.Time) {
+	if !lastActivity.IsZero() && now.Before(lastActivity) {
+		return
+	}
+	r := resting(now)
+	idle := idleSince(now).Milliseconds()
+	if idle >= drowsyAt && (nuzzleAt.IsZero() || !nuzzleReleased.IsZero()) {
+		wakeAt, wakeDrop, wakeLevel, wakeDrowsy = now, r.drop, r.level, r.drowsy
+		wakeStage = 0
+		if characters[character].id != "blue" {
+			wakeStage = restStage(idle)
+		}
+		wakingFromSleep = idle >= 60000
+	}
+	lastActivity = now
+}
+func wakeGain(now time.Time) float64 {
+	if wakeAt.IsZero() {
+		return 0
+	}
+	return clampUnit(1 - now.Sub(wakeAt).Seconds()/.18)
+}
+
+func restStage(idleMS int64) int { return min(4, 1+int(idleMS-drowsyAt)/750) }
+func awakeShake(now time.Time) float64 {
+	if !wakingFromSleep || wakeAt.IsZero() {
+		return 0
+	}
+	t := now.Sub(wakeAt).Seconds() / .48
+	if t < 0 || t >= 1 {
+		return 0
+	}
+	return .55 * math.Sin(4*math.Pi*t) * (1 - t)
+}
+
+func headPoint(p point) direction {
+	x, y := logicalPoint(p)
+	return direction{(x - 150) / 43, (y - 77) / 52}
+}
+func insideHead(p point, radius float64) bool {
+	if size.X <= 0 || size.Y <= 0 {
+		return false
+	}
+	v := headPoint(p)
+	return v.x*v.x+v.y*v.y <= radius*radius
+}
+func nuzzleWeight(now time.Time) float64 {
+	if nuzzleAt.IsZero() {
+		return 0
+	}
+	if !nuzzleReleased.IsZero() {
+		return nuzzleEndWeight * clampUnit(1-now.Sub(nuzzleReleased).Seconds()/.22)
+	}
+	return clampUnit(now.Sub(nuzzleAt).Seconds() / .18)
+}
+func advanceHold(now time.Time, p point) {
+	if !buttonDown || !pressedOnHead || dragging {
+		return
+	}
+	if nuzzleAt.IsZero() || !nuzzleReleased.IsZero() {
+		if now.Sub(pressTime) < 350*time.Millisecond || crossedDragThreshold(p) || !insideHead(p, 1) {
+			return
+		}
+		userActivity(now)
+		nuzzleAt = pressTime.Add(350 * time.Millisecond)
+		nuzzleReleased = time.Time{}
+		smileAt, patAt, resumeAt = time.Time{}, time.Time{}, time.Time{}
+	}
+	v := headPoint(p)
+	nuzzleCursor = direction{max(-1, min(1, v.x)), max(-1, min(1, v.y))}
+}
+func releaseNuzzle(now time.Time) bool {
+	if nuzzleAt.IsZero() || !nuzzleReleased.IsZero() {
+		return false
+	}
+	nuzzleEndWeight = nuzzleWeight(now)
+	nuzzleReleased = now
+	// The entire hold was interaction, even with a stationary pointer.
+	lastActivity = now
+	return true
+}
+
+func faceDuringActivity(now time.Time) expression {
+	if !nuzzleAt.IsZero() {
+		age := now.Sub(nuzzleAt).Milliseconds()
+		rel := now.Sub(nuzzleReleased).Milliseconds()
+		if nuzzleReleased.IsZero() || rel < 220 {
+			h := 1
+			switch {
+			case !nuzzleReleased.IsZero():
+				if rel < 110 {
+					h = 5
+				} else {
+					h = 6
+				}
+			case age < 100:
+				h = 1
+			case age < 220:
+				h = 2
+			default:
+				h = 3 + int((age-220)/180%2)
+			}
+			return expression{smile: true, heart: h, amount: int(math.Round(84 * nuzzleWeight(now)))}
+		}
+	}
+	f := faceAt(now)
+	if f.smile {
+		return f
+	}
+	r := resting(now)
+	if idleSince(now).Milliseconds() >= drowsyAt {
+		return expression{amount: r.level}
+	}
+	if wg := wakeGain(now); wg > 0 {
+		return expression{amount: int(math.Round(float64(wakeLevel) * wg))}
+	}
+	return f
+}
+
+func posture(now time.Time, head, eyes direction) (direction, direction) {
+	r := resting(now)
+	gain := 1 - r.drowsy - wakeDrowsy*wakeGain(now)
+	head.x *= gain
+	head.y = head.y*gain + r.drop + wakeDrop*wakeGain(now)
+	head.x += awakeShake(now)
+	eyes.x *= gain
+	eyes.y *= gain
+	if weight := nuzzleWeight(now); weight > 0 {
+		t := 2 * math.Pi * now.Sub(nuzzleAt).Seconds() / .9
+		hx := .65*nuzzleCursor.x + .12*math.Sin(t)
+		hy := .45*nuzzleCursor.y + .08*(math.Cos(t)-1)
+		head.x = head.x*(1-weight) + hx*weight
+		head.y = head.y*(1-weight) + hy*weight
+		eyes.x *= 1 - weight
+		eyes.y *= 1 - weight
+	}
+	head.x = max(-1, min(1, head.x))
+	head.y = max(-1, min(1, head.y))
+	return head, eyes
+}
+
+// GetLastInputInfo also observes clicks, scrolling and unmapped keys outside
+// the pet, including input that does not change the global cursor position.
+func observeSessionInput(now time.Time) {
+	info := struct{ size, stamp uint32 }{size: 8}
+	if call(u, "GetLastInputInfo", uintptr(unsafe.Pointer(&info))) == 0 {
+		return
+	}
+	if haveInputStamp && info.stamp != lastInputStamp {
+		userActivity(now)
+	}
+	lastInputStamp, haveInputStamp = info.stamp, true
+}
+
+func drawSleepingLetters(full []byte, phase int) {
+	t := int64(phase-1) * 80
+	for i, glyph := range [...]struct{ x, y, w float64 }{{216, 82, 5}, {229, 67, 7}, {242, 52, 9}} {
+		age := t - int64(i)*360
+		if age < 0 || age >= 1100 {
+			continue
+		}
+		opacity := (190. / 255) * min(1., float64(age)/180, float64(1100-age)/280)
+		x := glyph.x * 2
+		y := 2 * (glyph.y - 6*float64(age)/1100)
+		w := 2 * glyph.w
+		for py := max(0, int(y)-4); py < min(masterHeight, int(y+w)+5); py++ {
+			for px := max(0, int(x)-4); px < min(masterWidth, int(x+w)+5); px++ {
+				dx := float64(px) + .5 - x
+				dy := float64(py) + .5 - y
+				n := max(0., min(w, dx))
+				diag := max(0., min(w, (w-dx+dy)*.5))
+				dist := min(math.Hypot(dx-n, dy), math.Hypot(dx-n, dy-w), math.Hypot(dx-(w-diag), dy-diag))
+				edge := clampUnit(2.7 - dist)
+				if edge == 0 {
+					continue
+				}
+				ink := clampUnit(1.65 - dist)
+				a := int(math.Round(opacity * edge * 255))
+				out := full[4*(py*masterWidth+px):][:4]
+				for k, col := range [3]int{149, 117, 98} {
+					c := int(math.Round(249*(1-ink) + float64(col)*ink))
+					out[k] = byte((c*a + int(out[k])*(255-a) + 127) / 255)
+				}
+				out[3] = byte(a + (int(out[3])*(255-a)+127)/255)
+			}
+		}
+	}
+}
+
+func animationFrame(now time.Time) scene {
+	hand := handFrame(now)
+	v := scene{hand: hand, face: faceDuringActivity(now)}
+	m := mouseHand(now)
+	if strings.HasPrefix(hand, "mouse") && hand[5] == '3' {
+		v.hand = "idle0"
+		v.desk = desktopAt(now, 3)
+	} else if strings.HasPrefix(hand, "key") && keyboardLeft(symbol) && m != "" {
+		if strings.HasPrefix(m, "mouse") {
+			v.desk = desktopAt(now, int(m[5]-'0'))
+		} else {
+			v.desk = deskMouse{layer: -1 - int(m[5]-'0')}
+		}
+	}
+	idle := idleSince(now).Milliseconds()
+	restingHands := strings.HasPrefix(v.hand, "idle") && v.desk.layer == 0 && (nuzzleAt.IsZero() || !nuzzleReleased.IsZero())
+	if restingHands && idle >= 45000 {
+		if idle < 56550 {
+			var hobby scene
+			switch characters[character].id {
+			case "blue":
+				hobby.hand = ricePose(idle)
+			case "amber":
+				hobby.hand = bookPose(idle)
+			case "frost":
+				hobby.hand, hobby.toy, hobby.armTween = tossScene(idle)
+			}
+			hobby.mood = activityMood(idle, hobby.hand)
+			return hobby
+		}
+		v.hand = "idle0"
+		if characters[character].id != "blue" && idle >= drowsyAt {
+			v.hand = fmt.Sprintf("rest%d", restStage(idle))
+		}
+		if idle >= 60000 {
+			v.zzz = 1 + int((idle-60000)/80%25)
+		}
+	}
+	if restingHands && !buttonDown && idle < 45000 && v.face == (expression{}) {
+		v.mood = activityMood(idle, "")
+	}
+	if !wakeAt.IsZero() && now.Sub(wakeAt) < 300*time.Millisecond {
+		v.wakeRest = int(math.Round(float64(64*wakeStage) * clampUnit(1-now.Sub(wakeAt).Seconds()/.3)))
+	}
+	return v
+}
 func mouseQuadrant(p point) int {
 	q := 0
 	if p.X > xy.X+size.X/2 {
@@ -1217,14 +2164,7 @@ func (state *gazeState) advance(now time.Time, target direction) {
 	state.updated = now
 }
 
-func onHead(p point) bool {
-	if size.X == 0 || size.Y == 0 {
-		return false
-	}
-	x, y := logicalPoint(p)
-	dx, dy := (x-150)/43, (y-77)/52
-	return dx*dx+dy*dy <= 1
-}
+func onHead(p point) bool { return insideHead(p, 1) }
 
 type headStroke struct {
 	since, lastMove                    time.Time
@@ -1286,7 +2226,7 @@ func strokeHead(p point, now time.Time) {
 
 func crossedDragThreshold(p point) bool {
 	dx, dy := p.X-pressAt.X, p.Y-pressAt.Y
-	return dx >= dragThreshold.X || dx <= -dragThreshold.X || dy >= dragThreshold.Y || dy <= -dragThreshold.Y
+	return float64(dx)*float64(dx)+float64(dy)*float64(dy) > float64(dragThreshold.X)*float64(dragThreshold.X)
 }
 
 func cursorPosition() point {
@@ -1297,12 +2237,16 @@ func cursorPosition() point {
 
 func sampleCursor(now time.Time) {
 	p := cursorPosition()
+	observeSessionInput(now)
+	advanceHold(now, p)
+	updateDeskMotion(now, p)
 	gaze.advance(now, gazeTarget(p, xy, size))
 	if p != cur {
+		userActivity(now)
 		if !dragging && !buttonDown && !menuOpen {
 			strokeHead(p, now)
+			recordMouse(now)
 		}
-		recordMouse(now)
 		cur = p
 	}
 	quadrant = mouseQuadrant(p)
@@ -1349,6 +2293,7 @@ func input(l uintptr) {
 	if n < 40 || n > 64 || data[0] != 1 || data[26]&1 != 0 {
 		return
 	}
+	userActivity(time.Now())
 	v := int(data[30])
 	switch v {
 	case 186:
@@ -1406,7 +2351,7 @@ func input(l uintptr) {
 	}
 	if !due.IsZero() && time.Until(due) > 10*time.Millisecond {
 		// Prepare the expensive scaled contact pixels once, ahead of presentation.
-		framePixels(scene{hand: fmt.Sprintf("key%d-3", v), face: faceAt(due)})
+		framePixels(animationFrame(due))
 	}
 }
 func proc(h, m, w, l uintptr) uintptr {
@@ -1423,18 +2368,35 @@ func proc(h, m, w, l uintptr) uintptr {
 		tick()
 		return 0
 	case 0x201: // WM_LBUTTONDOWN
+		pressTime = time.Now()
+		userActivity(pressTime)
 		buttonDown = true
 		pressAt = cursorPosition()
 		pressedOnHead = onHead(pressAt)
 		stroke = headStroke{}
 		dpi := call(u, "GetDpiForWindow", h)
-		dragThreshold = point{max(1, int32(call(u, "GetSystemMetricsForDpi", 68, dpi))), max(1, int32(call(u, "GetSystemMetricsForDpi", 69, dpi)))}
+		if dpi == 0 {
+			dpi = 96
+		}
+		threshold := max(1, int32(math.Round(3*float64(dpi)/96)))
+		dragThreshold = point{threshold, threshold}
 		call(u, "SetCapture", h)
+		if call(u, "GetCapture") != h {
+			buttonDown, pressedOnHead = false, false
+		}
 		return 0
 	case 0x200: // WM_MOUSEMOVE, while captured
 		if buttonDown {
 			p := cursorPosition()
-			if crossedDragThreshold(p) {
+			now := time.Now()
+			advanceHold(now, p)
+			holding := !nuzzleAt.IsZero() && nuzzleReleased.IsZero()
+			if holding && insideHead(p, 1.15) {
+				return 0
+			}
+			if holding || crossedDragThreshold(p) {
+				releaseNuzzle(now)
+				pressedOnHead = false
 				buttonDown = false
 				dragging = true
 				call(u, "ReleaseCapture")
@@ -1447,18 +2409,30 @@ func proc(h, m, w, l uintptr) uintptr {
 		return 0
 	case 0x202: // WM_LBUTTONUP
 		if buttonDown {
-			buttonDown = false
-			call(u, "ReleaseCapture")
+			now := time.Now()
 			p := cursorPosition()
-			if pressedOnHead && !crossedDragThreshold(p) && onHead(p) {
-				now := time.Now()
+			advanceHold(now, p)
+			held := releaseNuzzle(now)
+			click := !held && pressedOnHead && !crossedDragThreshold(p) && onHead(p)
+			buttonDown, pressedOnHead = false, false
+			userActivity(now)
+			call(u, "ReleaseCapture")
+			if click {
 				startSmile(now)
-				paint(animationFrame(now))
 			}
+			paint(animationFrame(now))
 		}
 		return 0
-	case 0x215: // WM_CAPTURECHANGED
-		buttonDown = false
+	case 0x1f, 0x215: // WM_CANCELMODE or WM_CAPTURECHANGED
+		if buttonDown || pressedOnHead {
+			now := time.Now()
+			releaseNuzzle(now)
+			buttonDown, pressedOnHead = false, false
+			paint(animationFrame(now))
+		}
+		if m == 0x1f {
+			return call(u, "DefWindowProcW", h, m, w, l)
+		}
 		return 0
 	case 3: // WM_MOVE
 		var pos rect

@@ -1,7 +1,9 @@
 #import <Cocoa/Cocoa.h>
 #import <ImageIO/ImageIO.h>
 #include <math.h>
+#include <string.h>
 #import "Affection.h"
+#import "Rest.h"
 
 // The six cells are read left-to-right: neutral, blink, left/right typing, left/right gaze.
 enum Pose { Idle, Blink, TypeLeft, TypeRight, LookLeft, LookRight, PoseCount };
@@ -43,6 +45,11 @@ static void keycap(NSRect b, NSString *legend, BOOL active, Palette p, CGFloat p
     }
 }
 static int symbolFor(unichar c) { return c=='.'?1046:c; }
+// The sitter faces the viewer. Her left hand appears on screen right, and
+// her right hand shares time between the mouse and the right half of QWERTY.
+static BOOL usesCharacterLeft(int symbol) {
+    return symbol==32 || (symbol>0 && symbol<128 && strchr("12345QWERTASDFGZXCVB",symbol)!=NULL);
+}
 static NSString *symbolLabel(int code) {
     if (code==8) return @"⌫";
     if (code==127) return @"⌦";
@@ -59,6 +66,10 @@ static NSRect keyRect(CGFloat column,CGFloat units,int depth) {
     return box(right-(column+units)*pitch,207+depth*(8.6+.23*depth),
                units*pitch-1.35,6.2+.48*depth);
 }
+static NSRect deleteCap(BOOL forward) {
+    return forward?keyRect(14.16,.84,4):keyRect(13.1,1.06,4);
+}
+static NSRect spaceCap(void) { return keyRect(3,6.25,0); }
 static void keyDeck(CGFloat dy,unsigned rgb) {
     NSBezierPath *path=[NSBezierPath bezierPath];
     [path moveToPoint:at(75,203+dy)];
@@ -112,13 +123,14 @@ static void keyboard(Palette p,int code,NSInteger side,CGFloat pressure) {
         }
     }
     keycap(keyRect(0,1,4),@"`",NO,p,pressure);
-    keycap(keyRect(13.1,1.9,4),@"⌫",code==8 || code==127,p,pressure);
+    keycap(deleteCap(NO),@"⌫",code==8,p,pressure);
+    keycap(deleteCap(YES),@"⌦",code==127,p,pressure);
     keycap(keyRect(0,1.4,3),@"⇥",NO,p,pressure);    keycap(keyRect(13.5,1.5,3),@"",NO,p,pressure);
     keycap(keyRect(0,1.75,2),@"⇪",NO,p,pressure);   keycap(keyRect(12.9,2.1,2),@"↵",NO,p,pressure);
     keycap(keyRect(0,2.25,1),@"⇧",NO,p,pressure);   keycap(keyRect(12.4,2.6,1),@"⇧",NO,p,pressure);
-    keycap(keyRect(3.8,6.4,0),@"",code==32,p,pressure);
-    for (int i=0;i<3;i++) keycap(keyRect(i*1.25,1.2,0),@"",NO,p,pressure);
-    for (int i=0;i<4;i++) keycap(keyRect(10.25+i*1.19,1.14,0),@"",NO,p,pressure);
+    keycap(spaceCap(),@"",code==32,p,pressure);
+    for (int i=0;i<3;i++) keycap(keyRect(i,1,0),@"",NO,p,pressure);
+    for (int i=0;i<5;i++) keycap(keyRect(9.25+i*1.15,1.15,0),@"",NO,p,pressure);
 }
 static void badge(Palette p,int code,NSInteger side,CGFloat pressure) {
     if (code>=0) {
@@ -315,8 +327,8 @@ static const int density=2, patchTop=145;
 static const CGFloat boardX=20, boardY=205, boardSX=.85, boardSY=.72;
 static NSPoint keyTarget(int r,int k) {
     const CGFloat starts[]={1.05,1.45,1.8,2.3};
-    NSRect cap=r<4?keyRect(starts[r]+k,1,4-r):k==0?keyRect(3.8,6.4,0):keyRect(13.1,1.9,4);
-    CGFloat x=(r==4 && k==0)?NSMinX(cap)+.35*cap.size.width:NSMidX(cap);
+    NSRect cap=r<4?keyRect(starts[r]+k,1,4-r):k==0?spaceCap():deleteCap(k==2);
+    CGFloat x=(r==4 && k==0)?NSMinX(cap)+.67*cap.size.width:NSMidX(cap);
     return NSMakePoint(boardX+boardSX*x,boardY+boardSY*(H-NSMidY(cap)-203));
 }
 typedef struct {
@@ -458,8 +470,8 @@ static Placement mousePlacement(Placement rest,NSDictionary *hand,int stage,int 
     double length2=x*x+y*y;
     p.gripCos=(tx*x+ty*y)/length2;
     p.gripSin=(ty*x-tx*y)/length2;
-    p.dx=(stage==2?16:0)+(quadrant%2?.6:-.6);
-    p.dy=(stage==2?-4:0)+(quadrant>=2?-.45:.45);
+    p.dx=(stage==2?16:0)+(quadrant<0?0:quadrant%2?.6:-.6);
+    p.dy=(stage==2?-4:0)+(quadrant<0?0:quadrant>=2?-.45:.45);
     return p;
 }
 
@@ -516,9 +528,10 @@ static void layers(PoseTexture *pose,Placement p,int top,NSBitmapImageRep *back,
     }
     free(mesh);
 }
-static void render(NSURL *dir,NSString *name,PoseTexture *pose,Palette palette,int theme,
+typedef enum { FullPose, FreeDesk, HeldPointer } RenderLayer;
+static NSBitmapImageRep *render(NSURL *dir,NSString *name,PoseTexture *pose,Palette palette,int theme,
                    int code,BOOL right,int phase,NSPoint target,int mouseLevel,int quadrant,int smile,
-                   int wristPhase) {
+                   int wristPhase,RenderLayer layer) {
     BOOL key=code>=0,mouse=mouseLevel>0,bridge=wristPhase>=0;
     BOOL moving=key||mouse||bridge, grip=mouseLevel>=2||(bridge&&wristPhase<2);
     int top=key?patchTop:0;
@@ -532,7 +545,9 @@ static void render(NSURL *dir,NSString *name,PoseTexture *pose,Palette palette,i
     NSDictionary *hand=pose.rig[right?@"right":@"left"];
     double pressure=0;
     if (moving) {
-        p.tip=place(p,pointFrom(hand[@"tip"])); p.wrist=place(p,pointFrom(hand[@"wrist"]));
+        NSArray *tip=hand[code==32?@"thumb":@"tip"];
+        if (tip.count!=2) fail(@"缺少敲键指尖或空格拇指标注");
+        p.tip=place(p,pointFrom(tip)); p.wrist=place(p,pointFrom(hand[@"wrist"]));
         p.elbow=place(p,pointFrom(hand[@"elbow"])); p.moving=YES;
         if (key) {
             const double reach[]={.09,.61,1,.77,.20}, lift[]={2.6,4.4,0,2,3.3};
@@ -556,13 +571,13 @@ static void render(NSURL *dir,NSString *name,PoseTexture *pose,Palette palette,i
     NSBitmapImageRep *movingArm=nil;
     if (moving) {
         Placement fixed=p; fixed.moving=NO;
-        layers(pose.plates[right?1:0],fixed,top,back,front);
-        movingArm=bitmap(outW,outH);
-        if (grip) {
+        if (layer!=HeldPointer) layers(pose.plates[right?1:0],fixed,top,back,front);
+        if (layer!=FreeDesk) movingArm=bitmap(outW,outH);
+        if (grip && movingArm) {
             Placement gripPose=mousePlacement(fixed,pose.mouseArm.rig,mouseLevel,quadrant);
             if (bridge) liftGrip(&gripPose,pose.mouseArm.rig,wristPhase);
             layers(pose.mouseArm,gripPose,top,movingArm,nil);
-        } else {
+        } else if (movingArm) {
             solveArm(&p,right,hand[@"sleeve"]);
             layers(pose.arms[right?1:0],p,top,movingArm,nil);
         }
@@ -578,9 +593,9 @@ static void render(NSURL *dir,NSString *name,PoseTexture *pose,Palette palette,i
     NSAffineTransform *t=[NSAffineTransform transform];
     [t translateXBy:boardX yBy:H-boardY-boardSY*(H-203)];
     [t scaleXBy:boardSX yBy:boardSY]; [t concat];
-    keyboard(palette,code,right,pressure);
+    if (layer!=HeldPointer) keyboard(palette,code,right,pressure);
     [NSGraphicsContext restoreGraphicsState];
-    drawMouse(palette,mouse);
+    if (layer!=FreeDesk) drawMouse(palette,mouse);
     if (smile>=0) drawAffection(smile,theme);
     [NSGraphicsContext restoreGraphicsState];
     CGContextDrawImage(cg,CGRectMake(0,0,outW,outH),front.CGImage);
@@ -592,7 +607,9 @@ static void render(NSURL *dir,NSString *name,PoseTexture *pose,Palette palette,i
     [NSGraphicsContext restoreGraphicsState];
     if (mouse || bridge) {
         if (!pose.neutralFrame) fail(@"缺少待机参考帧");
-        memcpy(output.bitmapData,pose.neutralFrame.bitmapData,output.bytesPerRow*patchTop*density);
+        size_t upperRows=output.bytesPerRow*patchTop*density;
+        if (layer==HeldPointer) memset(output.bitmapData,0,upperRows);
+        else memcpy(output.bitmapData,pose.neutralFrame.bitmapData,upperRows);
         // Keep the resting shoulder seam and the diagonal edge of the cape.
         // The two drawings meet inside the sleeve, away from the outer ink line.
         if (grip) {
@@ -601,15 +618,42 @@ static void render(NSURL *dir,NSString *name,PoseTexture *pose,Palette palette,i
                 double kept=1-ease((y-seam+10)/19);
                 if (kept<=0) continue;
                 int i=y*(int)output.bytesPerRow+4*x;
-                for (int k=0;k<4;k++)
-                    output.bitmapData[i+k]=lrint(output.bitmapData[i+k]*(1-kept)+pose.neutralFrame.bitmapData[i+k]*kept);
+                for (int k=0;k<4;k++) {
+                    uint8_t shoulder=layer==HeldPointer?0:pose.neutralFrame.bitmapData[i+k];
+                    output.bitmapData[i+k]=lrint(output.bitmapData[i+k]*(1-kept)+shoulder*kept);
+                }
             }
         }
     } else if (!key && smile<0 && phase==0) {
         pose.neutralFrame=output;
     }
-    writeBitmap(output,[dir URLByAppendingPathComponent:[name stringByAppendingPathExtension:@"png"]]);
+    if (name) writeBitmap(output,[dir URLByAppendingPathComponent:[name stringByAppendingPathExtension:@"png"]]);
+    return output;
 }
+// Both original arms are removed using the same local costume plates as the
+// typing animation. Their masks are disjoint, so hair, face, tail and desk
+// retain the original neutral pixels everywhere outside the two sleeves.
+static NSBitmapImageRep *activityBackground(PoseTexture *idle,Palette palette,int theme,BOOL bothArms) {
+    PoseTexture *clean=[PoseTexture new];
+    clean.bounds=idle.bounds;
+    int w=(int)idle.pixels.pixelsWide, h=(int)idle.pixels.pixelsHigh;
+    clean.pixels=bitmap(w,h);
+    NSUInteger stride=clean.pixels.bytesPerRow;
+    memcpy(clean.pixels.bitmapData,idle.pixels.bitmapData,stride*h);
+    if (!bothArms) clean.hands=idle.plates[1].hands;
+    for (PoseTexture *plate in bothArms?idle.plates:@[idle.plates[1]]) {
+        for (int y=0;y<h;y++) for (int x=0;x<w;x++) {
+            NSUInteger offset=y*stride+4*x;
+            const uint8_t *original=idle.pixels.bitmapData+offset,*replacement=plate.pixels.bitmapData+offset;
+            if (memcmp(original,replacement,4)!=0) memcpy(clean.pixels.bitmapData+offset,replacement,4);
+        }
+    }
+    return render(nil,nil,clean,palette,theme,-1,NO,0,NSZeroPoint,0,0,-1,-1,FullPose);
+}
+#import "ActivityArt.h"
+#import "BlueRice.h"
+#import "ReadingAndToss.h"
+#import "MoodArt.h"
 static void exportRole(NSString *role,int idx,Palette pal,NSURL *art,NSURL *assets,
                        NSBitmapImageRep *smiles,NSBitmapImageRep *halfFaces,NSBitmapImageRep *underlay,
                        NSDictionary *rig,NSDictionary *face) {
@@ -637,28 +681,34 @@ static void exportRole(NSString *role,int idx,Palette pal,NSURL *art,NSURL *asse
     PoseTexture *blinkHalf=expression(idle,halfArt,eyesOnly);
     PoseTexture *smileHalf=expression(idle,halfArt,halfRegistration);
     for (int i=0;i<8;i++) @autoreleasepool {
-        render(dir,[NSString stringWithFormat:@"idle%d",i],i==7?blink:idle,pal,idx,-1,NO,i,NSZeroPoint,0,0,-1,-1);
+        render(dir,[NSString stringWithFormat:@"idle%d",i],i==7?blink:idle,pal,idx,-1,NO,i,NSZeroPoint,0,0,-1,-1,FullPose);
     }
-    render(dir,@"blinkHalf",blinkHalf,pal,idx,-1,NO,0,NSZeroPoint,0,0,-1,-1);
-    render(dir,@"smileHalf",smileHalf,pal,idx,-1,NO,0,NSZeroPoint,0,0,-1,-1);
+    render(dir,@"blinkHalf",blinkHalf,pal,idx,-1,NO,0,NSZeroPoint,0,0,-1,-1,FullPose);
+    render(dir,@"smileHalf",smileHalf,pal,idx,-1,NO,0,NSZeroPoint,0,0,-1,-1,FullPose);
     for (int i=0;i<4;i++) @autoreleasepool {
-        render(dir,[NSString stringWithFormat:@"wrist%d",i],idle,pal,idx,-1,NO,0,NSZeroPoint,0,0,-1,i);
+        render(dir,[NSString stringWithFormat:@"wrist%d",i],idle,pal,idx,-1,NO,0,NSZeroPoint,0,0,-1,i,FullPose);
     }
     for (int i=0;i<6;i++) @autoreleasepool {
-        render(dir,[NSString stringWithFormat:@"smile%d",i],smile,pal,idx,-1,NO,0,NSZeroPoint,0,0,i,-1);
+        render(dir,[NSString stringWithFormat:@"smile%d",i],smile,pal,idx,-1,NO,0,NSZeroPoint,0,0,i,-1,FullPose);
     }
     for (int n=1;n<=3;n++) for (int q=0;q<4;q++) @autoreleasepool {
-        render(dir,[NSString stringWithFormat:@"mouse%d%d",n,q],idle,pal,idx,-1,NO,0,NSZeroPoint,n,q,-1,-1);
+        render(dir,[NSString stringWithFormat:@"mouse%d%d",n,q],idle,pal,idx,-1,NO,0,NSZeroPoint,n,q,-1,-1,FullPose);
     }
+    render(dir,@"deskFree",idle,pal,idx,-1,NO,0,NSZeroPoint,3,-1,-1,-1,FreeDesk);
+    render(dir,@"pointer",idle,pal,idx,-1,NO,0,NSZeroPoint,3,-1,-1,-1,HeldPointer);
     for (int r=0;r<5;r++) {
         NSUInteger count=r==4?3:keyRows[r].length;
         for (NSUInteger k=0;k<count;k++) for (int n=1;n<=5;n++) @autoreleasepool {
             int code=r==4?(int[]){32,8,127}[k]:symbolFor([keyRows[r] characterAtIndex:k]);
-            render(dir,[NSString stringWithFormat:@"key%d-%d",code,n],idle,pal,idx,code,r<4&&k<5,
-                   n,keyTarget(r,(int)k),0,0,-1,-1);
+            render(dir,[NSString stringWithFormat:@"key%d-%d",code,n],idle,pal,idx,code,usesCharacterLeft(code),
+                   n,keyTarget(r,(int)k),0,0,-1,-1,FullPose);
         }
     }
-    printf("%s: 32 full frames + 240 typing patches\n",role.UTF8String); fflush(stdout);
+    exportRestPoses(dir,(NSUInteger)idx);
+    if (idx==0) exportBlueRice(dir,art,idle,pal);
+    else exportReadingOrToss(dir,art,idle,pal,idx);
+    exportMoods(art,dir,(NSUInteger)idx);
+    printf("%s: %d full frames + 240 typing patches\n",role.UTF8String,(int[]){48,45,50}[idx]); fflush(stdout);
 }
 int main(int argc,const char *argv[]) {
     @autoreleasepool {

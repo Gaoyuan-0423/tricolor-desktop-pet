@@ -68,7 +68,8 @@ func packRole(role, input, output string, tileSize, columns int) error {
 	if err != nil {
 		return err
 	}
-	const expectedFrames = 32 + 240 // full poses and per-key lower sections
+	// Shared gestures plus each character's four idle poses and expressions.
+	expectedFrames := 278 + map[string]int{"blue": 10, "amber": 7, "frost": 12}[role]
 	if len(files) != expectedFrames {
 		return fmt.Errorf("%s: expected %d animation frames, got %d", role, expectedFrames, len(files))
 	}

@@ -14,6 +14,14 @@ Three desktop companions for macOS and Windows. Move your mouse and your pet fol
 
 The Mac app is signed with Developer ID and notarized by Apple. The app includes the notarization ticket and passes Gatekeeper verification after extraction. [Release notes and SHA-256 checksums](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/tag/v1.3.0)
 
+## 1.4.0 source preview
+
+After about 45 seconds without keyboard or mouse input, DeepSeek picks up a bowl of rice, Claude opens her flower-embossed book and turns the pages, and Codex tosses a little blue cloud into the air and catches it. Their expressions change with each activity. At about 60 seconds they close their eyes and drift off. The first keystroke wakes them with a little shake and lights up the matching key. The animation below uses frames drawn by the Mac app with the idle wait shortened.
+
+![The three pets eating rice, reading, and tossing a toy before falling asleep and waking to a keystroke](docs/images/idle-hobbies.gif)
+
+Moving the desktop cursor slides the pet’s mouse and the hand holding it together. Press D, F or Space at the same time and the other hand can still type. Hold the pet’s head for about 0.35 seconds and she’ll squint and nuzzle toward your pointer.
+
 ## The three pets at rest
 
 The blue-haired maid, orange-haired companion and white-haired dragon appear from left to right. Click any pet for a full-size view.
