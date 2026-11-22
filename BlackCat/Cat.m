@@ -782,7 +782,10 @@ static NSURL *soundURL(int kind) {
         pixels=drawCloud(pixels,cloud,_toyBounds,toy);
     }
     CGImageRef image=PetImageFromRGBA(pixels,rasterWidth,rasterHeight);
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
     _imageLayer.contents = image ? (__bridge id)image : nil;
+    [CATransaction commit];
     if (image) CGImageRelease(image);
 }
 
