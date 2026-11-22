@@ -31,6 +31,7 @@ var g = syscall.NewLazyDLL("gdi32.dll")
 var k = syscall.NewLazyDLL("kernel32.dll")
 var winmm = syscall.NewLazyDLL("winmm.dll")
 var registry = syscall.NewLazyDLL("advapi32.dll")
+var shell = syscall.NewLazyDLL("shell32.dll")
 
 // The timer callback posts to the UI thread and never touches its procedure cache.
 var postWindowMessage = u.NewProc("PostMessageW")
@@ -72,6 +73,41 @@ type wc struct {
 	Menu, Name               *uint16
 	Small                    uintptr
 }
+
+// NOTIFYICONDATAW uses the same window and resource icon as the pet.
+type notifyIconData struct {
+	Size                uint32
+	Window              uintptr
+	ID, Flags, Callback uint32
+	Icon                uintptr
+	Tip                 [128]uint16
+	State, StateMask    uint32
+	Info                [256]uint16
+	Version             uint32
+	InfoTitle           [64]uint16
+	InfoFlags           uint32
+	GUID                [16]byte
+	BalloonIcon         uintptr
+}
+
+var tray notifyIconData
+var taskbarCreated uintptr
+
+type notifyIconIdentifier struct {
+	Size   uint32
+	Window uintptr
+	ID     uint32
+	GUID   [16]byte
+}
+
+func addTrayIcon() {
+	ptr := uintptr(unsafe.Pointer(&tray))
+	if call(shell, "Shell_NotifyIconW", 0, ptr) != 0 { // NIM_ADD
+		tray.Version = 4
+		call(shell, "Shell_NotifyIconW", 4, ptr) // NIM_SETVERSION
+	}
+}
+
 type bih struct {
 	Size            uint32
 	W, H            int32
@@ -96,6 +132,7 @@ const (
 	firstSizeCommand      = 20
 	cacheBudget           = 24 << 20
 	contactMessage        = 0x8000 + 13 // private WM_APP message
+	trayMessage           = 0x8000 + 14
 )
 
 var percentages = [...]int{50, 75, 100, 125, 150, 200}
@@ -2355,6 +2392,10 @@ func input(l uintptr) {
 	}
 }
 func proc(h, m, w, l uintptr) uintptr {
+	if taskbarCreated != 0 && m == taskbarCreated && tray.Window != 0 {
+		addTrayIcon() // Explorer recreates the notification area when it restarts.
+		return 0
+	}
 	switch m {
 	case contactMessage:
 		if w == contactTicket && contactTimer != nil {
@@ -2452,7 +2493,30 @@ func proc(h, m, w, l uintptr) uintptr {
 			setWindowLayout(percent, xy, false)
 		}
 		return 0
-	case 0x205:
+	case 0x205, trayMessage:
+		p := cursorPosition()
+		if m == trayMessage {
+			switch uint16(l) {
+			case 0x7b: // WM_CONTEXTMENU may be requested by keyboard.
+				id := notifyIconIdentifier{Window: h, ID: tray.ID}
+				id.Size = uint32(unsafe.Sizeof(id))
+				var bounds rect
+				if call(shell, "Shell_NotifyIconGetRect", uintptr(unsafe.Pointer(&id)), uintptr(unsafe.Pointer(&bounds))) == 0 {
+					p = point{bounds.left, bounds.bottom}
+				}
+			case 0x400, 0x401: // NIN_SELECT, NIN_KEYSELECT
+				anchor := point{int32(int16(w)), int32(int16(w >> 16))}
+				if anchor != (point{-1, -1}) {
+					p = anchor
+				}
+			case 0x202, 0x205: // Legacy Shell callback if NIM_SETVERSION failed.
+				if l>>16 != 0 { // Version 4 also emits a separate activation or context notification.
+					return 0
+				}
+			default:
+				return 0
+			}
+		}
 		menu := call(u, "CreatePopupMenu")
 		for i, c := range characters {
 			var checked uintptr
@@ -2493,13 +2557,15 @@ func proc(h, m, w, l uintptr) uintptr {
 		}
 		call(u, "AppendMenuW", menu, startupFlag, 3, uintptr(unsafe.Pointer(str(startupLabel))))
 		call(u, "AppendMenuW", menu, 0, 2, uintptr(unsafe.Pointer(str("退出三色桌宠"))))
-		p := point{}
-		call(u, "GetCursorPos", uintptr(unsafe.Pointer(&p)))
 		call(u, "SetForegroundWindow", h)
 		menuOpen = true
 		cmd := call(u, "TrackPopupMenu", menu, 0x102, uintptr(p.X), uintptr(p.Y), 0, h, 0)
 		menuOpen = false
 		call(u, "DestroyMenu", menu)
+		call(u, "PostMessageW", h, 0, 0, 0) // Let the Shell dismiss the tracking menu.
+		if m == trayMessage {
+			call(shell, "Shell_NotifyIconW", 3, uintptr(unsafe.Pointer(&tray))) // NIM_SETFOCUS
+		}
 		switch {
 		case cmd >= firstCharacterCommand && cmd < firstCharacterCommand+uintptr(len(characters)):
 			index := int(cmd - firstCharacterCommand)
@@ -2523,6 +2589,10 @@ func proc(h, m, w, l uintptr) uintptr {
 		return 0
 	case 2:
 		cancelContact()
+		if tray.Window != 0 {
+			call(shell, "Shell_NotifyIconW", 2, uintptr(unsafe.Pointer(&tray))) // NIM_DELETE
+			tray.Window = 0
+		}
 		call(u, "PostQuitMessage", 0)
 		return 0
 	}
@@ -2542,6 +2612,9 @@ func main() {
 	inst := call(k, "GetModuleHandleW", 0)
 	name := str("ThreeColorDesktopPet")
 	c := wc{Proc: syscall.NewCallback(proc), Inst: inst, Name: name, Cursor: call(u, "LoadCursorW", 0, 32512)}
+	// Load group icon resource #1 at the system's window and notification sizes.
+	c.Icon = call(u, "LoadImageW", inst, 1, 1, call(u, "GetSystemMetrics", 11), call(u, "GetSystemMetrics", 12), 0x8000)
+	c.Small = call(u, "LoadImageW", inst, 1, 1, call(u, "GetSystemMetrics", 49), call(u, "GetSystemMetrics", 50), 0x8000)
 	c.Size = uint32(unsafe.Sizeof(c))
 	if call(u, "RegisterClassExW", uintptr(unsafe.Pointer(&c))) == 0 {
 		return
@@ -2573,6 +2646,13 @@ func main() {
 		return
 	}
 	call(u, "ShowWindow", hwnd, 4)
+	if c.Small != 0 {
+		taskbarCreated = call(u, "RegisterWindowMessageW", uintptr(unsafe.Pointer(str("TaskbarCreated"))))
+		tray = notifyIconData{Size: uint32(unsafe.Sizeof(tray)), Window: hwnd, ID: 1, Flags: 0x87, Callback: trayMessage, Icon: c.Small}
+		tip, _ := syscall.UTF16FromString("三色桌宠")
+		copy(tray.Tip[:], tip)
+		addTrayIcon()
+	}
 	call(u, "SetTimer", hwnd, 1, 16, 0)
 	var m msg
 	for int32(call(u, "GetMessageW", uintptr(unsafe.Pointer(&m)), 0, 0, 0)) > 0 {

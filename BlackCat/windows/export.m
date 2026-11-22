@@ -1,3 +1,5 @@
+//go:build darwin
+
 #import <Cocoa/Cocoa.h>
 #import <ImageIO/ImageIO.h>
 #include <math.h>

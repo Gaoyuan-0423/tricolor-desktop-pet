@@ -1,18 +1,24 @@
 # Tricolor Desktop Pet
 
+<img src="BlackCat/Artwork/tricolor-logo.png" width="160" alt="Hand-painted portraits of the blue maid, orange sunflower girl, and white dragon">
+
 [简体中文](README.md) · **English**
 
 Three desktop companions for macOS and Windows. Move your mouse and your pet follows the cursor with her eyes, then turns her head. Type a letter and she taps the matching key on her own keyboard. Give her a head pat and she smiles as little hearts float up.
 
-## Download 1.4.0
+## Download 1.4.1
 
 | Platform | Download |
 | --- | --- |
-| macOS 12 or later, Apple silicon and Intel | [Universal macOS ZIP](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.4.0/TricolorPet-1.4.0-macOS-universal.zip) |
-| Windows x64 | [Windows EXE](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.4.0/TricolorPet-1.4.0-Windows-x64.exe) |
-| Source code | [1.4.0 source ZIP](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.4.0/TricolorPet-1.4.0-source.zip) |
+| macOS 12 or later, Apple silicon and Intel | [Universal macOS ZIP](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.4.1/TricolorPet-1.4.1-macOS-universal.zip) |
+| Windows x64 | [Windows EXE](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.4.1/TricolorPet-1.4.1-Windows-x64.exe) |
+| Source code | [1.4.1 source ZIP](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.4.1/TricolorPet-1.4.1-source.zip) |
 
-The macOS 1.4.0 app is signed with Developer ID and notarized by Apple. The notarization ticket is stapled to the app. The extracted app passed Gatekeeper verification. [Release notes and SHA-256 checksums](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/tag/v1.4.0)
+The macOS 1.4.1 app is signed with Developer ID and notarized by Apple. The notarization ticket is stapled to the app. The extracted app passed Gatekeeper verification. [Release notes and SHA-256 checksums](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/tag/v1.4.1)
+
+Version 1.4.1 introduces a hand-painted portrait of all three pets. The Mac menu bar shows a whale, sunflower, or little horned dragon for the active pet. Click the icon to open the pet menu. On Windows, the EXE and notification area use the group portrait.
+
+[Download the notarized 1.4.0 release](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/tag/v1.4.0)
 
 ## New interactions in 1.4.0
 
@@ -87,7 +93,7 @@ bash build-mac.sh
 ```powershell
 cd BlackCat/windows
 $env:GOARCH = 'amd64'
-go build -trimpath -ldflags='-s -w -H=windowsgui' -o TricolorPet.exe main.go
+go build -trimpath -ldflags='-s -w -H=windowsgui' -o TricolorPet.exe .
 ```
 
 The [project guide](BlackCat/项目说明.md) covers cross-compilation and animation export. The [artwork notes](BlackCat/Artwork/素材说明.md) describe the source illustrations, hand poses and expressions. Both guides are in Chinese.

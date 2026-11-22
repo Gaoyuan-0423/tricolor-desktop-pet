@@ -10,6 +10,14 @@ app="$stage/三色桌宠.app"
 content="$app/Contents"
 mkdir -p "$content/MacOS" "$content/Resources"
 cp Info.plist "$content/Info.plist"
+iconset="$stage/TricolorPet.iconset"
+mkdir "$iconset"
+for size in 16 32 128 256 512; do
+    sips -z "$size" "$size" Artwork/tricolor-logo.png --out "$iconset/icon_${size}x${size}.png" >/dev/null
+    pixels=$((size * 2))
+    sips -z "$pixels" "$pixels" Artwork/tricolor-logo.png --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
+done
+iconutil -c icns "$iconset" -o "$content/Resources/TricolorPet.icns"
 clang -arch x86_64 -arch arm64 -mmacosx-version-min=12.0 -fobjc-arc -O2 -Wall \
     -framework Cocoa -framework CoreGraphics -framework ImageIO -framework ServiceManagement \
     -framework CoreServices -lz Cat.m PetFrameAtlas.m PetGazeMap.m PetLoginItem.m PetMotion.m \

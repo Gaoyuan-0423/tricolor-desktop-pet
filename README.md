@@ -1,18 +1,24 @@
 # 三色桌宠
 
+<img src="BlackCat/Artwork/tricolor-logo.png" width="160" alt="三位桌宠的手绘合照：蓝色女仆、橙色向日葵少女和白色小龙">
+
 **简体中文** · [English](README.en.md)
 
 适用于 macOS 和 Windows 的键鼠桌宠，有三个角色可选。你移动鼠标时，她的目光会先看过去，头部随后转动。你敲键时，她会伸手按下对应的键。轻点她的头，她会微笑，头顶还会飘出小爱心。
 
-## 下载 1.4.0
+## 下载 1.4.1
 
 | 平台 | 下载 |
 | --- | --- |
-| macOS 12 及以上，Apple 芯片和 Intel | [macOS 通用版 ZIP](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.4.0/TricolorPet-1.4.0-macOS-universal.zip) |
-| Windows x64 | [Windows 版 EXE](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.4.0/TricolorPet-1.4.0-Windows-x64.exe) |
-| 源码 | [1.4.0 源码 ZIP](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.4.0/TricolorPet-1.4.0-source.zip) |
+| macOS 12 及以上，Apple 芯片和 Intel | [macOS 通用版 ZIP](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.4.1/TricolorPet-1.4.1-macOS-universal.zip) |
+| Windows x64 | [Windows 版 EXE](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.4.1/TricolorPet-1.4.1-Windows-x64.exe) |
+| 源码 | [1.4.1 源码 ZIP](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.4.1/TricolorPet-1.4.1-source.zip) |
 
-macOS 1.4.0 已使用 Developer ID 签名并通过 Apple 公证。公证票据已装订到应用，解压后的应用已通过 Gatekeeper 验证。[发行说明与 SHA-256 校验值](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/tag/v1.4.0)
+macOS 1.4.1 已使用 Developer ID 签名并通过 Apple 公证。公证票据已装订到应用，解压后的应用已通过 Gatekeeper 验证。[发行说明与 SHA-256 校验值](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/tag/v1.4.1)
+
+1.4.1 启用了新的三角色手绘图标。Mac 菜单栏会显示当前角色的标志：蓝色角色是鲸鱼，橙色角色是向日葵，白色角色是双角小龙。点击图标即可打开桌宠菜单。Windows 的 EXE 和通知区域也换上了三人合照。
+
+[下载已通过 Apple 公证的 1.4.0](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/tag/v1.4.0)
 
 ## 1.4.0 的新互动
 
@@ -87,7 +93,7 @@ bash build-mac.sh
 ```powershell
 cd BlackCat/windows
 $env:GOARCH = 'amd64'
-go build -trimpath -ldflags='-s -w -H=windowsgui' -o TricolorPet.exe main.go
+go build -trimpath -ldflags='-s -w -H=windowsgui' -o TricolorPet.exe .
 ```
 
 交叉编译和动作导出的步骤见[项目说明](BlackCat/项目说明.md)。角色原画、手部标注与表情素材见[素材说明](BlackCat/Artwork/素材说明.md)。

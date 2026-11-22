@@ -808,6 +808,57 @@ static NSURL *soundURL(int kind) {
 
 static CGEventRef observeKey(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void *context);
 
+// Draw into an 18-point template so AppKit can tint the shapes in every menu bar appearance.
+static NSImage *menuBarIcon(NSString *role) {
+    NSImage *image = [NSImage imageWithSize:NSMakeSize(18, 18) flipped:YES drawingHandler:^BOOL(NSRect bounds) {
+        CGContextRef c = NSGraphicsContext.currentContext.CGContext;
+        CGContextSetGrayFillColor(c, 0, 1);
+        if ([role isEqualToString:@"blue"]) {
+            // Whale body and raised flukes, with a cutout for the eye.
+            CGContextMoveToPoint(c, 1, 10.5);
+            CGContextAddCurveToPoint(c, 1, 6.7, 3.7, 4.4, 6.8, 4.4);
+            CGContextAddCurveToPoint(c, 10.4, 4.4, 11.1, 8.5, 13.1, 8.8);
+            CGContextAddCurveToPoint(c, 12.3, 7.0, 12.1, 5.5, 12.5, 3.8);
+            CGContextAddQuadCurveToPoint(c, 14.7, 4.4, 15.1, 6.5);
+            CGContextAddQuadCurveToPoint(c, 15.9, 5.1, 17.5, 4.8);
+            CGContextAddQuadCurveToPoint(c, 17.4, 8.3, 15.3, 9.8);
+            CGContextAddCurveToPoint(c, 14.2, 13.0, 11.4, 15, 7.6, 15);
+            CGContextAddCurveToPoint(c, 3.8, 15, 1, 13.3, 1, 10.5);
+            CGContextClosePath(c);
+            CGContextAddEllipseInRect(c, CGRectMake(3.7, 8, 2, 2));
+            CGContextEOFillPath(c);
+        } else if ([role isEqualToString:@"amber"]) {
+            // Keep the sunflower's open centre legible at 1×.
+            CGContextTranslateCTM(c, 9, 9);
+            for (int petal = 0; petal < 8; ++petal) {
+                CGContextFillEllipseInRect(c, CGRectMake(-1.85, -8.4, 3.7, 5.5));
+                CGContextRotateCTM(c, M_PI / 4);
+            }
+            CGContextAddEllipseInRect(c, CGRectMake(-4.6, -4.6, 9.2, 9.2));
+            CGContextAddEllipseInRect(c, CGRectMake(-2.0, -2.0, 4, 4));
+            CGContextEOFillPath(c);
+        } else {
+            // A small dragon peeking out between two upward-curving horns.
+            CGContextMoveToPoint(c, 3.5, 7.7);
+            CGContextAddQuadCurveToPoint(c, 1.3, 5.2, 3.0, 1.2);
+            CGContextAddQuadCurveToPoint(c, 3.7, 4.1, 6.6, 5.9);
+            CGContextAddQuadCurveToPoint(c, 9.0, 5.0, 11.4, 5.9);
+            CGContextAddQuadCurveToPoint(c, 14.3, 4.1, 15, 1.2);
+            CGContextAddQuadCurveToPoint(c, 16.7, 5.2, 14.5, 7.7);
+            CGContextAddQuadCurveToPoint(c, 15.6, 10.8, 14.3, 13.8);
+            CGContextAddCurveToPoint(c, 12.0, 17.0, 6.0, 17.0, 3.7, 13.8);
+            CGContextAddQuadCurveToPoint(c, 2.4, 10.8, 3.5, 7.7);
+            CGContextClosePath(c);
+            CGContextAddEllipseInRect(c, CGRectMake(5.5, 9.7, 2.0, 2.6));
+            CGContextAddEllipseInRect(c, CGRectMake(10.5, 9.7, 2.0, 2.6));
+            CGContextEOFillPath(c);
+        }
+        return YES;
+    }];
+    image.template = YES;
+    return image;
+}
+
 @implementation PetApplication {
     NSWindow *_window;
     NSStatusItem *_statusItem;
@@ -827,6 +878,7 @@ static CGEventRef observeKey(CGEventTapProxy proxy, CGEventType type, CGEventRef
     if (index < 0 || index >= (NSInteger)roleIDs.count) return;
     self.pet.role = roleIDs[index];
     _roleControl.selectedSegment = index;
+    [self updateStatusIcon];
     [self updateMenu];
 }
 
@@ -884,6 +936,15 @@ static CGEventRef observeKey(CGEventTapProxy proxy, CGEventType type, CGEventRef
     [self updateMenu];
 }
 
+- (void)updateStatusIcon {
+    NSStatusBarButton *button = _statusItem.button;
+    if (!button) return;
+    NSString *label = [NSString stringWithFormat:@"三色桌宠 · %@", self.pet.accessibilityLabel];
+    button.image = menuBarIcon(self.pet.role);
+    button.toolTip = label;
+    button.accessibilityLabel = label;
+}
+
 - (void)updateMenu {
     NSUInteger i = [roleIDs indexOfObject:self.pet.role];
     for (NSMenuItem *item in _roleItems)
@@ -894,7 +955,6 @@ static CGEventRef observeKey(CGEventTapProxy proxy, CGEventType type, CGEventRef
     _muteItem.state = muteState;
     _muteControl.state = muteState;
     _controlsItem.state = _roleControl.hidden ? NSControlStateValueOff : NSControlStateValueOn;
-    _statusItem.button.toolTip = [NSString stringWithFormat:@"三色桌宠 · %@", roleNames[i]];
 }
 
 - (void)refreshLoginItem {
@@ -1042,8 +1102,9 @@ static CGEventRef observeKey(CGEventTapProxy proxy, CGEventType type, CGEventRef
         _window.hasShadow = NO;
         _window.level = NSFloatingWindowLevel;
         _window.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary;
-        _statusItem = [NSStatusBar.systemStatusBar statusItemWithLength:NSVariableStatusItemLength];
-        _statusItem.button.title = @"三色";
+        _statusItem = [NSStatusBar.systemStatusBar statusItemWithLength:NSSquareStatusItemLength];
+        _statusItem.button.imagePosition = NSImageOnly;
+        [self updateStatusIcon];
     }
     [self layoutPet];
     _window.delegate = self;
