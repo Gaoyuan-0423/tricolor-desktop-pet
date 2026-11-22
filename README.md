@@ -4,17 +4,17 @@
 
 适用于 macOS 和 Windows 的键鼠桌宠，有三个角色可选。你移动鼠标时，她的目光会先看过去，头部随后转动。你敲键时，她会伸手按下对应的键。轻点她的头，她会微笑，头顶还会飘出小爱心。
 
-## 下载 1.3.0
+## 下载 1.4.0
 
 | 平台 | 下载 |
 | --- | --- |
-| macOS 12 及以上，Apple 芯片和 Intel | [macOS 通用版 ZIP](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.3.0/TricolorPet-1.3.0-macOS-universal.zip) |
-| Windows x64 | [Windows 版 EXE](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.3.0/TricolorPet-1.3.0-Windows-x64.exe) |
-| 源码 | [1.3.0 源码 ZIP](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.3.0/TricolorPet-1.3.0-source.zip) |
+| macOS 12 及以上，Apple 芯片和 Intel | [macOS 通用版 ZIP](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.4.0/TricolorPet-1.4.0-macOS-universal.zip) |
+| Windows x64 | [Windows 版 EXE](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.4.0/TricolorPet-1.4.0-Windows-x64.exe) |
+| 源码 | [1.4.0 源码 ZIP](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.4.0/TricolorPet-1.4.0-source.zip) |
 
-Mac 版已使用 Developer ID 签名并通过 Apple 公证。公证票据已随应用打包，解压后的应用通过了 Gatekeeper 验证。[发行说明与 SHA-256 校验值](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/tag/v1.3.0)
+macOS 1.4.0 已使用 Developer ID 签名并通过 Apple 公证。公证票据已装订到应用，解压后的应用已通过 Gatekeeper 验证。[发行说明与 SHA-256 校验值](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/tag/v1.4.0)
 
-## 1.4.0 源码预览
+## 1.4.0 的新互动
 
 空闲约 45 秒，DeepSeek 会端起碗吃白饭，Claude 会翻开花纹书，Codex 会抛起蓝色云朵玩偶再接住。三人的表情会随动作改变。约 60 秒后，她们闭眼睡着，头顶飘出 Zzz。有人按键时，桌宠会轻轻摇头醒来，同时接住第一下敲键。下面的动画来自 Mac 版实际绘制，缩短了等待时间。
 
@@ -54,7 +54,7 @@ Mac 版已使用 Developer ID 签名并通过 Apple 公证。公证票据已随�
 
 ### 摸头
 
-在 1.3.0 中，轻点头顶后，角色先眯眼浅笑，再闭眼，头顶飘出小爱心。持续来回轻抚可以延长笑容。这个过程中，她仍能敲键和握鼠标。
+从 1.3.0 起，轻点头顶后，角色先眯眼浅笑，再闭眼，头顶飘出小爱心。持续来回轻抚可以延长笑容。这个过程中，她仍能敲键和握鼠标。
 
 ![从左到右，蓝、橙、白三个角色被摸头后闭眼微笑，头顶浮出爱心](docs/images/head-pat.png)
 
@@ -69,7 +69,7 @@ Mac 版已使用 Developer ID 签名并通过 Apple 公证。公证票据已随�
 - **Mac**　下载 macOS 通用版，解压后将「三色桌宠.app」移入「应用程序」，再打开。要让角色跟随其他应用里的按键，右键角色，点「开启输入监控…」并在系统设置中授权。
 - **Windows**　将 Windows x64 版 EXE 放在准备长期使用的文件夹里，双击运行。
 - **两个平台**　左键拖动可以移动角色。右键菜单可以切换角色、开关打字声，或将大小调到 50% 至 200%。
-- **登录时启动（1.3.0）**　默认关闭。右键角色，勾选「登录时启动」，下次登录当前账户时桌宠会自动打开。再次点击即可关闭。Mac 提示需要批准时，可从同一菜单打开系统的登录项设置。
+- **登录时启动（自 1.3.0 起）**　默认关闭。右键角色，勾选「登录时启动」，下次登录当前账户时桌宠会自动打开。再次点击即可关闭。Mac 提示需要批准时，可从同一菜单打开系统的登录项设置。
 
 ## 从源码构建
 
