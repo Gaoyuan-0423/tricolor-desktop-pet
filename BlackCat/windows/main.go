@@ -125,11 +125,10 @@ type device struct {
 const (
 	logicalWidth          = 300
 	logicalHeight         = 270
-	masterWidth           = 600
-	masterHeight          = 540
 	keyPatchY             = 290
 	firstCharacterCommand = 10
 	firstSizeCommand      = 20
+	firstSleepCommand     = 30
 	cacheBudget           = 24 << 20
 	contactMessage        = 0x8000 + 13 // private WM_APP message
 	trayMessage           = 0x8000 + 14
@@ -165,9 +164,15 @@ var activeAtlas *frameAtlas
 var baseFrame []byte
 var frameCache map[scene][]byte
 var cacheOrder []scene
+var sleepingPatches struct {
+	base    scene
+	valid   bool
+	patches sleepPatchCache
+}
 var layers *expressionLayers
 var xFilter, yFilter []samples
 var sounds [3][]byte
+var animationTimerPeriod uint32
 
 func settingPath(name string) string {
 	dir, err := os.UserConfigDir()
@@ -319,6 +324,8 @@ func fitOrigin(pos, sz point, work rect) point {
 func clearFrameCache() {
 	frameCache = make(map[scene][]byte)
 	cacheOrder = nil
+	sleepingPatches.valid = false
+	sleepingPatches.patches = sleepPatchCache{}
 	currentMasterName, gazeCanvas.frame, gazeCanvas.hobby, last = scene{}, scene{}, scene{}, scene{}
 	currentMaster = nil
 }
@@ -549,55 +556,6 @@ func (atlas *frameAtlas) copyFrame(name string, dst []byte) bool {
 		}
 	}
 	return true
-}
-
-// Each dest pixel's taps integrate the covered source pixels when shrinking.
-// When enlarging they interpolate between the two nearest pixel centers.
-type samples struct {
-	first   int
-	weights []int
-}
-
-func samplingAxis(source, dest int) []samples {
-	const one = 4096
-	out := make([]samples, dest)
-	ratio := float64(source) / float64(dest)
-	for i := range out {
-		if dest >= source {
-			p := max(0, min(float64(source-1), (float64(i)+0.5)*ratio-0.5))
-			left := int(p)
-			rightWeight := int(math.Round((p - float64(left)) * one))
-			out[i] = samples{left, []int{one - rightWeight}}
-			if rightWeight > 0 {
-				out[i].weights = append(out[i].weights, rightWeight)
-			}
-			continue
-		}
-		left, right := float64(i)*ratio, float64(i+1)*ratio
-		first, end := int(left), min(source, int(math.Ceil(right)))
-		taps := make([]int, end-first)
-		prev := 0
-		for j := first; j < end; j++ {
-			cumulative := int(math.Round((min(right, float64(j+1)) - left) / ratio * one))
-			taps[j-first] = cumulative - prev
-			prev = cumulative
-		}
-		out[i] = samples{first, taps}
-	}
-	return out
-}
-
-func filterPixel(src []byte, start, stride int, weights []int, dst []byte) {
-	var b, g, r, a int
-	for _, w := range weights {
-		p := src[start : start+4]
-		b += w * int(p[0])
-		g += w * int(p[1])
-		r += w * int(p[2])
-		a += w * int(p[3])
-		start += stride
-	}
-	dst[0], dst[1], dst[2], dst[3] = byte((b+2048)>>12), byte((g+2048)>>12), byte((r+2048)>>12), byte((a+2048)>>12)
 }
 
 func scaledFrame(src []byte) []byte {
@@ -1217,7 +1175,7 @@ func (s *gazeState) poseAt(view scene, now time.Time) gazePose {
 	}
 	head, eyes := posture(now, s.head, s.eyes)
 	if strings.HasPrefix(view.hand, "book") {
-		sweep := math.Sin(2 * math.Pi * float64(idleSince(now).Milliseconds()-45000) / 1600)
+		sweep := math.Sin(2 * math.Pi * float64(hobbyMilliseconds(idleSince(now).Milliseconds())-45000) / 1600)
 		head, eyes = direction{.04 * sweep, .12}, direction{.14 * sweep, .35}
 	}
 	if view.toy.visible {
@@ -1327,6 +1285,7 @@ func (r *gazeRig) warp(src, dst []byte, pose gazePose, allowed []bool) {
 type gazeWork struct {
 	frame              scene
 	master, horizontal []byte
+	sleepSource        []byte
 	hobby              scene
 	neutral            []byte
 }
@@ -1348,26 +1307,26 @@ func (work *gazeWork) hobbySource(view scene) []byte {
 	return work.neutral
 }
 
-func affectedRange(axis []samples, low, high int) (int, int) {
-	left := 0
-	for left < len(axis) && axis[left].first+len(axis[left].weights) <= low {
-		left++
-	}
-	right := left
-	for right < len(axis) && axis[right].first < high {
-		right++
-	}
-	return left, right
-}
-
-func (work *gazeWork) render(dst []byte, name scene, pose gazePose) {
+func (work *gazeWork) render(dst []byte, name scene, pose gazePose, sleep *sleepPatch) {
 	r := activeRig
 	if r == nil || pose == (gazePose{}) {
 		return
 	}
-	source := masterFrame(name)
+	base := name
+	if sleep != nil {
+		base.zzz = 0
+	}
+	source := masterFrame(base)
 	if source == nil {
 		return
+	}
+	if sleep != nil {
+		if len(work.sleepSource) != len(source) {
+			work.sleepSource = make([]byte, len(source))
+		}
+		copy(work.sleepSource, source)
+		sleep.copyToMaster(work.sleepSource)
+		source = work.sleepSource
 	}
 	if work.frame != name || name.toy.visible {
 		if len(work.master) != len(source) {
@@ -1427,9 +1386,19 @@ func paint(name scene) {
 	if bits == nil || baseFrame == nil || (name == last && pose == lastPose) {
 		return
 	}
-	pixels := framePixels(name)
+	// Keep phase-independent pixels in the regular cache. A small, separately
+	// cached patch reproduces the already-composited Z pixels exactly.
+	base := name
+	useSleepPatch := name.zzz > 0 && name.zzz <= 25 && !name.toy.visible && name.armTween == 0 &&
+		!strings.HasPrefix(name.hand, "book") && !strings.HasPrefix(name.hand, "toss")
+	var sleep *sleepPatch
+	if useSleepPatch {
+		base.zzz = 0
+	}
+	pixels := framePixels(base)
 	if pixels == nil {
 		name = scene{hand: "idle0"}
+		useSleepPatch = false
 		pose = gaze.poseAt(name, now)
 		if name == last && pose == lastPose {
 			return
@@ -1438,7 +1407,18 @@ func paint(name scene) {
 	}
 	dst := unsafe.Slice((*byte)(bits), len(pixels))
 	copy(dst, pixels)
-	gazeCanvas.render(dst, name, pose)
+	if useSleepPatch {
+		if !sleepingPatches.valid || sleepingPatches.base != base {
+			sleepingPatches.base, sleepingPatches.valid = base, true
+			sleepingPatches.patches = sleepPatchCache{}
+		}
+		patch := sleepingPatches.patches.get(name.zzz, 8<<20, func() sleepPatch {
+			return makeSleepPatch(masterFrame(name), xFilter, yFilter)
+		})
+		patch.copyTo(dst, int(size.X))
+		sleep = &patch
+	}
+	gazeCanvas.render(dst, name, pose, sleep)
 	zero := point{}
 	blend := uint32(0x01ff0000)
 	if call(u, "UpdateLayeredWindow", hwnd, 0, uintptr(unsafe.Pointer(&xy)), uintptr(unsafe.Pointer(&size)), dc, uintptr(unsafe.Pointer(&zero)), 0, uintptr(unsafe.Pointer(&blend)), 2) != 0 {
@@ -1731,46 +1711,6 @@ func idleSince(now time.Time) time.Duration {
 	return now.Sub(lastActivity)
 }
 
-const drowsyAt int64 = 57000
-
-func ricePose(idleMS int64) string {
-	if idleMS < 45000 || idleMS >= 56550 {
-		return ""
-	}
-	for _, beat := range [...]struct {
-		until int64
-		pose  string
-	}{
-		{47400, "rice1"}, {48550, "rice2"}, {49400, "rice3"}, {50500, "rice4"},
-		{51200, "rice3"}, {52250, "rice2"}, {53100, "rice3"}, {54500, "rice4"},
-		{55200, "rice3"}, {55950, "rice2"}, {56550, "rice1"},
-	} {
-		if idleMS < beat.until {
-			return beat.pose
-		}
-	}
-	return ""
-}
-
-func bookPose(idle int64) string {
-	switch {
-	case idle < 46300:
-		return "book1"
-	case idle < 48700:
-		return "book2"
-	case idle < 49500:
-		return "book3"
-	case idle < 52300:
-		return "book2"
-	case idle < 53100:
-		return "book3"
-	case idle < 55600:
-		return "book2"
-	default:
-		return "book4"
-	}
-}
-
 // Master-pixel centers are measured at the drawn palm. The quadratic
 // flight clears the head to its right and returns to the receiving palm.
 func tossScene(idle int64) (string, toyPose, int) {
@@ -1825,7 +1765,7 @@ var quietMoods struct {
 // Plan once per quiet spell. Refreshes and contact-frame prewarming must not
 // reroll a face while a pose is on screen or a bite is in progress.
 func activityMood(idle int64, hobby string) moodLayer {
-	if idle < 4000 {
+	if idle < 4000 && hobby == "" {
 		return moodLayer{}
 	}
 	since := lastActivity
@@ -1843,11 +1783,11 @@ func activityMood(idle int64, hobby string) moodLayer {
 		var end int64
 		for {
 			start := end + 4000 + int64(moodRandom.Intn(4001))
-			if start >= 45000 {
+			if start >= hobbyStartMilliseconds() {
 				break
 			}
 			end = start + 1200 + int64(moodRandom.Intn(801))
-			if end > 45000 {
+			if end > hobbyStartMilliseconds() {
 				break
 			}
 			var kind int
@@ -1862,9 +1802,10 @@ func activityMood(idle int64, hobby string) moodLayer {
 		quietMoods.anticipation, quietMoods.enjoyment = moodRandom.Intn(2), moodRandom.Intn(2)
 	}
 	if hobby != "" {
+		hobbyIdle := hobbyMilliseconds(idle)
 		switch hobby {
 		case "book1", "book2":
-			if idle >= 51000 {
+			if hobbyIdle >= 51000 {
 				return moodLayer{2, 64}
 			}
 			return moodLayer{1, 64}
@@ -1885,7 +1826,7 @@ func activityMood(idle int64, hobby string) moodLayer {
 		case "rice3":
 			return moodLayer{}
 		}
-		if idle >= 50500 {
+		if hobbyIdle >= 50500 {
 			choice = 1 - choice
 		}
 		return moodLayer{pair[choice], 64}
@@ -1910,10 +1851,10 @@ func resting(now time.Time) restState {
 		return restState{}
 	}
 	idle := idleSince(now).Milliseconds()
-	d := clampUnit(float64(idle-drowsyAt) / float64(60000-drowsyAt))
-	sleep := clampUnit(float64(idle-60000) / 600)
+	d := clampUnit(float64(idle-drowsyMilliseconds()) / 3000)
+	sleep := clampUnit(float64(idle-sleepAfterMilliseconds()) / 600)
 	r := restState{drowsy: d, asleep: sleep, level: int(math.Round(64*d + 64*sleep))}
-	r.drop = .65*d + .07*sleep*math.Sin(2*math.Pi*float64(idle-60000)/3200)
+	r.drop = .65*d + .07*sleep*math.Sin(2*math.Pi*float64(idle-sleepAfterMilliseconds())/3200)
 	return r
 }
 func userActivity(now time.Time) {
@@ -1922,15 +1863,16 @@ func userActivity(now time.Time) {
 	}
 	r := resting(now)
 	idle := idleSince(now).Milliseconds()
-	if idle >= drowsyAt && (nuzzleAt.IsZero() || !nuzzleReleased.IsZero()) {
+	if idle >= drowsyMilliseconds() && (nuzzleAt.IsZero() || !nuzzleReleased.IsZero()) {
 		wakeAt, wakeDrop, wakeLevel, wakeDrowsy = now, r.drop, r.level, r.drowsy
 		wakeStage = 0
 		if characters[character].id != "blue" {
 			wakeStage = restStage(idle)
 		}
-		wakingFromSleep = idle >= 60000
+		wakingFromSleep = idle >= sleepAfterMilliseconds()
 	}
 	lastActivity = now
+	updateAnimationTimer(now)
 }
 func wakeGain(now time.Time) float64 {
 	if wakeAt.IsZero() {
@@ -1939,7 +1881,7 @@ func wakeGain(now time.Time) float64 {
 	return clampUnit(1 - now.Sub(wakeAt).Seconds()/.18)
 }
 
-func restStage(idleMS int64) int { return min(4, 1+int(idleMS-drowsyAt)/750) }
+func restStage(idleMS int64) int { return min(4, 1+int(idleMS-drowsyMilliseconds())/750) }
 func awakeShake(now time.Time) float64 {
 	if !wakingFromSleep || wakeAt.IsZero() {
 		return 0
@@ -2026,7 +1968,7 @@ func faceDuringActivity(now time.Time) expression {
 		return f
 	}
 	r := resting(now)
-	if idleSince(now).Milliseconds() >= drowsyAt {
+	if idleSince(now).Milliseconds() >= drowsyMilliseconds() {
 		return expression{amount: r.level}
 	}
 	if wg := wakeGain(now); wg > 0 {
@@ -2070,41 +2012,6 @@ func observeSessionInput(now time.Time) {
 	lastInputStamp, haveInputStamp = info.stamp, true
 }
 
-func drawSleepingLetters(full []byte, phase int) {
-	t := int64(phase-1) * 80
-	for i, glyph := range [...]struct{ x, y, w float64 }{{216, 82, 5}, {229, 67, 7}, {242, 52, 9}} {
-		age := t - int64(i)*360
-		if age < 0 || age >= 1100 {
-			continue
-		}
-		opacity := (190. / 255) * min(1., float64(age)/180, float64(1100-age)/280)
-		x := glyph.x * 2
-		y := 2 * (glyph.y - 6*float64(age)/1100)
-		w := 2 * glyph.w
-		for py := max(0, int(y)-4); py < min(masterHeight, int(y+w)+5); py++ {
-			for px := max(0, int(x)-4); px < min(masterWidth, int(x+w)+5); px++ {
-				dx := float64(px) + .5 - x
-				dy := float64(py) + .5 - y
-				n := max(0., min(w, dx))
-				diag := max(0., min(w, (w-dx+dy)*.5))
-				dist := min(math.Hypot(dx-n, dy), math.Hypot(dx-n, dy-w), math.Hypot(dx-(w-diag), dy-diag))
-				edge := clampUnit(2.7 - dist)
-				if edge == 0 {
-					continue
-				}
-				ink := clampUnit(1.65 - dist)
-				a := int(math.Round(opacity * edge * 255))
-				out := full[4*(py*masterWidth+px):][:4]
-				for k, col := range [3]int{149, 117, 98} {
-					c := int(math.Round(249*(1-ink) + float64(col)*ink))
-					out[k] = byte((c*a + int(out[k])*(255-a) + 127) / 255)
-				}
-				out[3] = byte(a + (int(out[3])*(255-a)+127)/255)
-			}
-		}
-	}
-}
-
 func animationFrame(now time.Time) scene {
 	hand := handFrame(now)
 	v := scene{hand: hand, face: faceDuringActivity(now)}
@@ -2120,30 +2027,31 @@ func animationFrame(now time.Time) scene {
 		}
 	}
 	idle := idleSince(now).Milliseconds()
+	hobbyIdle := hobbyMilliseconds(idle)
 	restingHands := strings.HasPrefix(v.hand, "idle") && v.desk.layer == 0 && (nuzzleAt.IsZero() || !nuzzleReleased.IsZero())
-	if restingHands && idle >= 45000 {
-		if idle < 56550 {
+	if restingHands && hobbyIdle >= 45000 {
+		if hobbyIdle < 56550 {
 			var hobby scene
 			switch characters[character].id {
 			case "blue":
-				hobby.hand = ricePose(idle)
+				hobby.hand = ricePose(hobbyIdle)
 			case "amber":
-				hobby.hand = bookPose(idle)
+				hobby.hand = bookPose(hobbyIdle)
 			case "frost":
-				hobby.hand, hobby.toy, hobby.armTween = tossScene(idle)
+				hobby.hand, hobby.toy, hobby.armTween = tossScene(hobbyIdle)
 			}
 			hobby.mood = activityMood(idle, hobby.hand)
 			return hobby
 		}
 		v.hand = "idle0"
-		if characters[character].id != "blue" && idle >= drowsyAt {
+		if characters[character].id != "blue" && idle >= drowsyMilliseconds() {
 			v.hand = fmt.Sprintf("rest%d", restStage(idle))
 		}
-		if idle >= 60000 {
-			v.zzz = 1 + int((idle-60000)/80%25)
+		if idle >= sleepAfterMilliseconds() {
+			v.zzz = 1 + int((idle-sleepAfterMilliseconds())/80%25)
 		}
 	}
-	if restingHands && !buttonDown && idle < 45000 && v.face == (expression{}) {
+	if restingHands && !buttonDown && hobbyIdle < 45000 && v.face == (expression{}) {
 		v.mood = activityMood(idle, "")
 	}
 	if !wakeAt.IsZero() && now.Sub(wakeAt) < 300*time.Millisecond {
@@ -2293,6 +2201,24 @@ func tick() {
 	now := time.Now()
 	sampleCursor(now)
 	paint(animationFrame(now))
+	updateAnimationTimer(now)
+}
+
+// The same UI-thread timer controls polling and rendering. Raw keyboard input
+// invokes userActivity immediately; external mouse movement is polled within
+// one 40 ms sleep interval. A failed SetTimer leaves the existing cadence intact.
+func updateAnimationTimer(now time.Time) {
+	if hwnd == 0 {
+		return
+	}
+	interacting := buttonDown || dragging || menuOpen || (!nuzzleAt.IsZero() && nuzzleReleased.IsZero())
+	period := sleepTimerPeriod(idleSince(now).Milliseconds(), sleepAfterMilliseconds(), interacting)
+	if period == animationTimerPeriod {
+		return
+	}
+	if call(u, "SetTimer", hwnd, 1, uintptr(period), 0) != 0 {
+		animationTimerPeriod = period
+	}
 }
 
 // WM_TIMER is generated only when the message queue has no higher-priority
@@ -2535,6 +2461,19 @@ func proc(h, m, w, l uintptr) uintptr {
 			call(u, "AppendMenuW", sizes, checked, uintptr(firstSizeCommand+i), uintptr(unsafe.Pointer(label)))
 		}
 		call(u, "AppendMenuW", menu, 0x10, sizes, uintptr(unsafe.Pointer(str("大小"))))
+		sleeps := call(u, "CreatePopupMenu")
+		for i, seconds := range sleepWaitOptions {
+			var checked uintptr
+			if seconds == sleepAfterSeconds {
+				checked = 8
+			}
+			label := strconv.Itoa(seconds) + " 秒"
+			if seconds%60 == 0 {
+				label = strconv.Itoa(seconds/60) + " 分钟"
+			}
+			call(u, "AppendMenuW", sleeps, checked, uintptr(firstSleepCommand+i), uintptr(unsafe.Pointer(str(label))))
+		}
+		call(u, "AppendMenuW", menu, 0x10, sleeps, uintptr(unsafe.Pointer(str("入睡等待"))))
 		call(u, "AppendMenuW", menu, 0x800, 0, 0)
 		flag := uintptr(0)
 		if muted {
@@ -2577,6 +2516,15 @@ func proc(h, m, w, l uintptr) uintptr {
 			if n != percent && setWindowLayout(n, xy, true) {
 				saveSetting("size", strconv.Itoa(percent))
 			}
+		case cmd >= firstSleepCommand && cmd < firstSleepCommand+uintptr(len(sleepWaitOptions)):
+			seconds := sleepWaitOptions[cmd-firstSleepCommand]
+			if seconds != sleepAfterSeconds {
+				sleepAfterSeconds = seconds
+				quietMoods.started = time.Time{} // Re-plan expressions for the new horizon.
+				saveSetting("sleepAfterSeconds", strconv.Itoa(seconds))
+				updateAnimationTimer(time.Now())
+				paint(animationFrame(time.Now()))
+			}
 		case cmd == 1:
 			toggleMute()
 		case cmd == 3 && readErr == nil && pathErr == nil:
@@ -2602,6 +2550,7 @@ func main() {
 	runtime.LockOSThread()
 	muted = readSetting("muted") == "true"
 	percent = loadPercent()
+	sleepAfterSeconds = parseSleepWait(readSetting("sleepAfterSeconds"))
 	// PER_MONITOR_AWARE_V2, available on the supported Windows 11 platform.
 	if call(u, "SetProcessDpiAwarenessContext", ^uintptr(3)) == 0 {
 		call(u, "SetProcessDPIAware")
@@ -2653,7 +2602,7 @@ func main() {
 		copy(tray.Tip[:], tip)
 		addTrayIcon()
 	}
-	call(u, "SetTimer", hwnd, 1, 16, 0)
+	updateAnimationTimer(time.Now())
 	var m msg
 	for int32(call(u, "GetMessageW", uintptr(unsafe.Pointer(&m)), 0, 0, 0)) > 0 {
 		call(u, "TranslateMessage", uintptr(unsafe.Pointer(&m)))
