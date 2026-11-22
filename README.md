@@ -6,15 +6,17 @@
 
 适用于 macOS 和 Windows 的键鼠桌宠，有三个角色可选。你移动鼠标时，她的目光会先看过去，头部随后转动。你敲键时，她会伸手按下对应的键。轻点她的头，她会微笑，头顶还会飘出小爱心。
 
-## 下载 1.4.2
+## 下载 1.4.3
 
 | 平台 | 下载 |
 | --- | --- |
 | macOS 12 及以上，Apple 芯片和 Intel | [macOS 1.4.2 通用版 ZIP](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.4.2/TricolorPet-1.4.2-macOS-universal.zip) |
-| Windows x64 | [Windows 1.4.1 EXE](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.4.1/TricolorPet-1.4.1-Windows-x64.exe) |
-| 源码 | [1.4.2 源码 ZIP](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.4.2/TricolorPet-1.4.2-source.zip) |
+| Windows x64 | [Windows 1.4.3 EXE](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.4.3/TricolorPet-1.4.3-Windows-x64.exe) |
+| 源码 | [1.4.3 源码 ZIP](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.4.3/TricolorPet-1.4.3-source.zip) |
 
-1.4.2 更新 macOS 版：动画优先跟随显示器刷新，右键菜单可设置入睡等待时间；深睡时减少重复绘制和动画更新，保持呼吸与 Z 字动画。桌宠不再阻止 Mac 闲置休眠。macOS 版已使用 Developer ID 签名并通过 Apple 公证。Windows 下载仍为 1.4.1 的原有成品。[发行说明与 SHA-256 校验值](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/tag/v1.4.2)
+1.4.3 更新 Windows 版：深睡时降低动画更新频率，优化 Z 字缓存，并在右键菜单中增加入睡等待设置。Windows 版已交叉编译并通过离屏测试，尚未在 Windows 真机验证。[发行说明与 SHA-256 校验值](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/tag/v1.4.3)
+
+macOS 下载仍为未改动的 1.4.2：动画优先跟随显示器刷新，深睡时减少重复绘制和动画更新，桌宠不再阻止 Mac 闲置休眠。该版本已使用 Developer ID 签名并通过 Apple 公证。
 
 1.4.1 启用了新的三角色手绘图标。Mac 菜单栏会显示当前角色的标志：蓝色角色是鲸鱼，橙色角色是向日葵，白色角色是双角小龙。点击图标即可打开桌宠菜单。Windows 的 EXE 和通知区域也换上了三人合照。
 
@@ -73,7 +75,7 @@
 ## 运行与操作
 
 - **Mac**　下载 macOS 通用版，解压后将「三色桌宠.app」移入「应用程序」，再打开。要让角色跟随其他应用里的按键，右键角色，点「开启输入监控…」并在系统设置中授权。
-- **Mac 入睡等待**　右键角色，选择「入睡等待」，可设为 15 秒、30 秒、1 分钟、2 分钟、5 分钟或 10 分钟；默认 1 分钟。
+- **入睡等待**　Mac 和 Windows 均可右键角色，选择「入睡等待」，设为 15 秒、30 秒、1 分钟、2 分钟、5 分钟或 10 分钟；默认 1 分钟。
 - **Windows**　将 Windows x64 版 EXE 放在准备长期使用的文件夹里，双击运行。
 - **两个平台**　左键拖动可以移动角色。右键菜单可以切换角色、开关打字声，或将大小调到 50% 至 200%。
 - **登录时启动（自 1.3.0 起）**　默认关闭。右键角色，勾选「登录时启动」，下次登录当前账户时桌宠会自动打开。再次点击即可关闭。Mac 提示需要批准时，可从同一菜单打开系统的登录项设置。

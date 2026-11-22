@@ -6,15 +6,17 @@
 
 Three desktop companions for macOS and Windows. Move your mouse and your pet follows the cursor with her eyes, then turns her head. Type a letter and she taps the matching key on her own keyboard. Give her a head pat and she smiles as little hearts float up.
 
-## Download 1.4.2
+## Download 1.4.3
 
 | Platform | Download |
 | --- | --- |
 | macOS 12 or later, Apple silicon and Intel | [Universal macOS 1.4.2 ZIP](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.4.2/TricolorPet-1.4.2-macOS-universal.zip) |
-| Windows x64 | [Windows 1.4.1 EXE](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.4.1/TricolorPet-1.4.1-Windows-x64.exe) |
-| Source code | [1.4.2 source ZIP](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.4.2/TricolorPet-1.4.2-source.zip) |
+| Windows x64 | [Windows 1.4.3 EXE](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.4.3/TricolorPet-1.4.3-Windows-x64.exe) |
+| Source code | [1.4.3 source ZIP](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.4.3/TricolorPet-1.4.3-source.zip) |
 
-Version 1.4.2 updates the Mac app: animations follow the display refresh when available, and the right-click menu lets you choose when your pet falls asleep. Deep sleep uses fewer updates and avoids redundant drawing while keeping the breathing and floating Zs. The pet no longer prevents the Mac from sleeping when idle. The Mac app is signed with Developer ID and notarized by Apple. The Windows download remains the unchanged 1.4.1 build. [Release notes and SHA-256 checksums](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/tag/v1.4.2)
+Version 1.4.3 updates the Windows app: deep sleep uses fewer animation updates, the floating Zs use an improved cache, and the right-click menu offers a sleep delay setting. The Windows build was cross-compiled and tested off-screen; it has not yet been tested on a Windows PC. [Release notes and SHA-256 checksums](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/tag/v1.4.3)
+
+The Mac download remains the unchanged 1.4.2 build: animations follow the display refresh when available, deep sleep uses fewer updates and avoids redundant drawing, and the pet no longer prevents the Mac from sleeping when idle. The Mac app is signed with Developer ID and notarized by Apple.
 
 Version 1.4.1 introduces a hand-painted portrait of all three pets. The Mac menu bar shows a whale, sunflower, or little horned dragon for the active pet. Click the icon to open the pet menu. On Windows, the EXE and notification area use the group portrait.
 
@@ -73,7 +75,7 @@ The columns below show the blue, orange and white characters. The top row shows 
 ## Getting started
 
 - **Mac** — Download the universal macOS ZIP, extract it, move `三色桌宠.app` into Applications, then open it. To make your pet respond while you type in other apps, right-click her, choose “开启输入监控…” (Open Input Monitoring), and allow access in System Settings.
-- **Mac sleep delay** — Right-click your pet and choose “入睡等待” to set the wait to 15 or 30 seconds, or 1, 2, 5 or 10 minutes. The default is 1 minute.
+- **Sleep delay** — On Mac or Windows, right-click your pet and choose “入睡等待” to set the wait to 15 or 30 seconds, or 1, 2, 5 or 10 minutes. The default is 1 minute.
 - **Windows** — Save the Windows x64 EXE in a folder where you plan to keep it, then run it.
 - **Both platforms** — Drag your pet to move her. Right-click to switch characters, mute or unmute typing sounds, or change her size from 50% to 200%.
 - **Launch at login (since 1.3.0)** — Right-click your pet and select “登录时启动” to launch her the next time you sign in to this account. The option is off by default. Click it again to turn it off. If macOS asks for approval, the same menu can open Login Items in System Settings.

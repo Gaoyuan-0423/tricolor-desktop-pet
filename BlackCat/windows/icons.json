@@ -3,5 +3,25 @@
     "#1": {
       "0000": "../Artwork/tricolor-logo.png"
     }
+  },
+  "RT_VERSION": {
+    "#1": {
+      "0000": {
+        "fixed": {
+          "file_version": "1.4.3.0",
+          "product_version": "1.4.3.0"
+        },
+        "info": {
+          "0409": {
+            "FileDescription": "Tricolor Desktop Pet",
+            "FileVersion": "1.4.3.0",
+            "InternalName": "TricolorPet",
+            "OriginalFilename": "TricolorPet-1.4.3-Windows-x64.exe",
+            "ProductName": "Tricolor Desktop Pet",
+            "ProductVersion": "1.4.3.0"
+          }
+        }
+      }
+    }
   }
 }
