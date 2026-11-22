@@ -333,10 +333,18 @@ static NSURL *soundURL(int kind) {
                                  withExtension:@"wav"];
 }
 
+// Keep the closing-eyes transition at the display cadence. Once it completes,
+// breathing and the Z marks can be updated at a lower cadence until activity.
+static BOOL stableSleepCadence(const PetInteraction *interaction, PetMood mood, NSInteger now) {
+    return mood.sleeping && now-interaction->lastActivity >= interaction->sleepAfter+3600;
+}
+
 @interface PetView : NSView
 @property(nonatomic) BOOL muted;
 @property(nonatomic) BOOL draggable;
 @property(nonatomic, copy) NSString *role;
+@property(nonatomic, copy) void (^sleepCadenceChanged)(BOOL sleeping);
+@property(nonatomic, readonly) BOOL stableSleep;
 - (void)pressKey:(unsigned int)code;
 - (void)pressKey:(unsigned int)code atTime:(NSInteger)eventTime;
 - (void)mouseActivity:(NSEventType)eventType;
@@ -370,7 +378,7 @@ static NSURL *soundURL(int kind) {
     NSPoint _downPoint, _windowAtPress, _holdPoint, _lastPointer, _deskTarget, _deskPosition;
     NSInteger _downAt, _lastDeskSample;
     int _shownPointerX, _shownPointerY, _shownZ, _shownRest;
-    BOOL _pressed, _canPat, _dragged, _holding, _hasPointer, _shownGrip;
+    BOOL _pressed, _canPat, _dragged, _holding, _hasPointer, _shownGrip, _stableSleep;
     HeadStroke _stroke;
 }
 
@@ -407,8 +415,13 @@ static NSURL *soundURL(int kind) {
 }
 
 - (void)setSleepAfterMs:(NSInteger)milliseconds {
-    if (milliseconds >= 5000) _interaction.sleepAfter = milliseconds-3000;
+    if (milliseconds >= 5000) {
+        _interaction.sleepAfter = milliseconds-3000;
+        [self tick];
+    }
 }
+
+- (BOOL)stableSleep { return _stableSleep; }
 
 - (NSString *)accessibilityLabel {
     NSUInteger index = [roleIDs indexOfObject:_role];
@@ -656,8 +669,15 @@ static NSURL *soundURL(int kind) {
         _holding=YES;
     }
     _mood=PetMoodAt(&_interaction,now,(_holdPoint.x-150)/43,(_holdPoint.y-77)/52);
+    BOOL stableSleep=stableSleepCadence(&_interaction,_mood,now);
+    if (stableSleep!=_stableSleep) {
+        _stableSleep=stableSleep;
+        if (self.sleepCadenceChanged) self.sleepCadenceChanged(stableSleep);
+    }
     [self trackCursor:now];
     NSString *hands=PetHandFrame(&_hands,now,elapsed);
+    // The packed idle0–idle6 art is identical; avoid rebuilding it in deep sleep.
+    if (stableSleep && [hands hasPrefix:@"idle"]) hands=@"idle0";
     if (_mood.hobbyPose) {
         NSString *name=_interaction.hobby==PetRice ? @"rice" : _interaction.hobby==PetReading ? @"book" : @"toss";
         hands=[NSString stringWithFormat:@"%@%d",name,_mood.hobbyPose];
@@ -928,8 +948,58 @@ static NSImage *menuBarIcon(NSString *role) {
     CVDisplayLinkRef _displayLink;
     dispatch_source_t _displayTickSource;
     NSTimer *_displayFallbackTimer;
-    BOOL _stoppingDisplayTicks;
+    NSTimer *_sleepTimer;
+    BOOL _stoppingDisplayTicks, _usingSleepCadence;
     id _activity;
+}
+
+- (void)updateAnimationActivityForSleep:(BOOL)sleeping {
+    if (_activity) [[NSProcessInfo processInfo] endActivity:_activity];
+    NSActivityOptions options = NSActivityUserInitiatedAllowingIdleSystemSleep;
+    if (!sleeping) options |= NSActivityLatencyCritical;
+    _activity = [[NSProcessInfo processInfo] beginActivityWithOptions:options reason:@"桌面宠物动画"];
+}
+
+- (void)setSleepCadence:(BOOL)sleeping {
+    // This is called from PetView ticks, the main queue, or a main-run-loop timer.
+    if (_stoppingDisplayTicks || _usingSleepCadence==sleeping) return;
+    _usingSleepCadence=sleeping;
+    if (sleeping) {
+        if (_displayLink && CVDisplayLinkIsRunning(_displayLink) &&
+            CVDisplayLinkStop(_displayLink)!=kCVReturnSuccess && CVDisplayLinkIsRunning(_displayLink)) {
+            // Retain the working display link if it could not be stopped.
+            _usingSleepCadence=NO;
+            NSLog(@"Display link could not stop; retaining display cadence");
+            return;
+        }
+        [self updateAnimationActivityForSleep:YES];
+        [_displayFallbackTimer invalidate];
+        _displayFallbackTimer=nil;
+        __weak PetApplication *weakSelf=self;
+        _sleepTimer = [NSTimer timerWithTimeInterval:1.0/25.0 repeats:YES block:^(NSTimer *timer) {
+            PetApplication *owner=weakSelf;
+            if (owner && !owner->_stoppingDisplayTicks && owner->_usingSleepCadence) [owner.pet tick];
+        }];
+        [NSRunLoop.mainRunLoop addTimer:_sleepTimer forMode:NSRunLoopCommonModes];
+        return;
+    }
+    [_sleepTimer invalidate];
+    _sleepTimer=nil;
+    [self updateAnimationActivityForSleep:NO];
+    if (_displayLink && CVDisplayLinkStart(_displayLink)==kCVReturnSuccess) return;
+    if (_displayLink) {
+        CVDisplayLinkStop(_displayLink);
+        CVDisplayLinkRelease(_displayLink);
+        _displayLink=NULL;
+    }
+    if (_displayTickSource) { dispatch_source_cancel(_displayTickSource); _displayTickSource=nil; }
+    NSLog(@"Display link unavailable after wake; using timer");
+    __weak PetApplication *weakSelf=self;
+    _displayFallbackTimer=[NSTimer timerWithTimeInterval:1.0/60.0 repeats:YES block:^(NSTimer *timer) {
+        PetApplication *owner=weakSelf;
+        if (owner && !owner->_stoppingDisplayTicks && !owner->_usingSleepCadence) [owner.pet tick];
+    }];
+    [NSRunLoop.mainRunLoop addTimer:_displayFallbackTimer forMode:NSRunLoopCommonModes];
 }
 
 - (void)selectRole:(id)sender {
@@ -1237,7 +1307,7 @@ static NSImage *menuBarIcon(NSString *role) {
     _displayTickSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_DATA_OR, 0, 0, dispatch_get_main_queue());
     dispatch_source_set_event_handler(_displayTickSource, ^{
         PetApplication *owner = weakSelf;
-        if (owner && !owner->_stoppingDisplayTicks) [owner.pet tick];
+        if (owner && !owner->_stoppingDisplayTicks && !owner->_usingSleepCadence) [owner.pet tick];
     });
     dispatch_resume(_displayTickSource);
     CVReturn linkStatus = CVDisplayLinkCreateWithActiveCGDisplays(&_displayLink);
@@ -1252,15 +1322,16 @@ static NSImage *menuBarIcon(NSString *role) {
         NSLog(@"Display link unavailable (%d); using timer", (int)linkStatus);
         _displayFallbackTimer = [NSTimer timerWithTimeInterval:1.0/60.0 repeats:YES block:^(NSTimer *timer) {
             PetApplication *owner = weakSelf;
-            if (owner && !owner->_stoppingDisplayTicks) [owner.pet tick];
+            if (owner && !owner->_stoppingDisplayTicks && !owner->_usingSleepCadence) [owner.pet tick];
         }];
         [NSRunLoop.mainRunLoop addTimer:_displayFallbackTimer forMode:NSRunLoopCommonModes];
     }
-    // A transparent always-on-top window over other apps looks idle to App Nap,
-    // which then coalesces timers and chokes the pet's animation.
-    _activity = [[NSProcessInfo processInfo] beginActivityWithOptions:
-        (NSActivityOptions)(NSActivityLatencyCritical | NSActivityUserInitiated)
-        reason:@"桌面宠物动画"];
+    // Keep the transparent window's animation responsive without preventing the
+    // Mac itself from sleeping. High precision is only needed while awake.
+    [self updateAnimationActivityForSleep:NO];
+    self.pet.sleepCadenceChanged = ^(BOOL sleeping) { [weakSelf setSleepCadence:sleeping]; };
+    // The view may already be asleep when installed (e.g. restored or tested).
+    [self setSleepCadence:self.pet.stableSleep];
 }
 
 - (void)windowDidResignKey:(NSNotification *)notification { [self.pet cancelOperation:nil]; }
@@ -1269,6 +1340,8 @@ static NSImage *menuBarIcon(NSString *role) {
 
 - (void)applicationWillTerminate:(NSNotification *)note {
     _stoppingDisplayTicks = YES;
+    [_sleepTimer invalidate];
+    _sleepTimer = nil;
     [_displayFallbackTimer invalidate];
     _displayFallbackTimer = nil;
     if (_localMonitor) [NSEvent removeMonitor:_localMonitor];
@@ -1479,6 +1552,11 @@ static BOOL checkMotion(void) {
         if (PetMoodAt(&configured,sleepAt-1,0,0).sleeping ||
             !PetMoodAt(&configured,sleepAt,0,0).sleeping ||
             PetMoodAt(&configured,sleepAt+30000,0,0).hobbyPose) return NO;
+        if (stableSleepCadence(&configured,PetMoodAt(&configured,sleepAt+599,0,0),sleepAt+599) ||
+            !stableSleepCadence(&configured,PetMoodAt(&configured,sleepAt+600,0,0),sleepAt+600)) return NO;
+        PetInteraction waking=configured;
+        PetNoteActivity(&waking,sleepAt+700);
+        if (stableSleepCadence(&waking,PetMoodAt(&waking,sleepAt+700,0,0),sleepAt+700)) return NO;
         PetStartHold(&configured,sleepAt+1);
         PetMood held=PetMoodAt(&configured,sleepAt+1000,0,0);
         if (held.hobbyPose || held.sleeping) return NO;
@@ -1505,6 +1583,17 @@ static NSData *pixelsFromAtlas(PetFrameAtlas *atlas, NSString *name) {
     NSData *pixels = PetRGBAData(frame);
     CGImageRelease(frame);
     return pixels;
+}
+
+// The deep-sleep idle-frame reuse relies on these seven packed images matching.
+static BOOL checkSleepIdleFrames(PetFrameAtlas *atlas) {
+    NSData *idle=pixelsFromAtlas(atlas,@"idle0");
+    if (!idle) return NO;
+    for (int i=1;i<=6;i++) {
+        NSData *frame=pixelsFromAtlas(atlas,[NSString stringWithFormat:@"idle%d",i]);
+        if (![idle isEqualToData:frame]) return NO;
+    }
+    return YES;
 }
 
 static BOOL checkPointerLayer(PetFrameAtlas *atlas) {
@@ -1768,6 +1857,10 @@ static int checkBundle(NSURL *references) {
             @"tossDesk",@"tossArm1",@"tossArm2",@"tossArm4"]];
         if (!checkRole(atlas, role, expected, references)) {
             fprintf(stderr, "角色图集无效：%s\n", role.UTF8String);
+            return 1;
+        }
+        if (!checkSleepIdleFrames(atlas)) {
+            fprintf(stderr, "睡眠待机帧不一致：%s\n",role.UTF8String);
             return 1;
         }
         BOOL scenes=blue ? checkBlueMeal(atlas) :
