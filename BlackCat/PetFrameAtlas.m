@@ -5,7 +5,7 @@
 static const NSUInteger frameWidth = 600;
 static const NSUInteger fullHeight = 540;
 static const NSUInteger patchHeight = 250;
-static const NSUInteger maxFrames = 266;
+static const NSUInteger maxFrames = 272;
 static const CGBitmapInfo pixelFormat = kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big;
 
 static uint16_t uint16LE(const uint8_t *p) {

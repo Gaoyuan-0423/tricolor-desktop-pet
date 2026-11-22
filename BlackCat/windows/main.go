@@ -29,6 +29,10 @@ var u = syscall.NewLazyDLL("user32.dll")
 var g = syscall.NewLazyDLL("gdi32.dll")
 var k = syscall.NewLazyDLL("kernel32.dll")
 var winmm = syscall.NewLazyDLL("winmm.dll")
+var registry = syscall.NewLazyDLL("advapi32.dll")
+
+// The timer callback posts to the UI thread and never touches its procedure cache.
+var postWindowMessage = u.NewProc("PostMessageW")
 
 // All window procedures run on the locked UI thread.
 var procedures = map[*syscall.LazyDLL]map[string]*syscall.LazyProc{}
@@ -90,6 +94,7 @@ const (
 	firstCharacterCommand = 10
 	firstSizeCommand      = 20
 	cacheBudget           = 24 << 20
+	contactMessage        = 0x8000 + 13 // private WM_APP message
 )
 
 var percentages = [...]int{50, 75, 100, 125, 150, 200}
@@ -109,19 +114,20 @@ var activeRig *gazeRig
 var gazeCanvas gazeWork
 var lastPose gazePose
 var currentMaster []byte
-var currentMasterName string
+var currentMasterName scene
 var layoutBusy, buttonDown, dragging, menuOpen bool
 var pressedOnHead bool
 var pressAt, dragThreshold point
 var started = time.Now()
 var mouseAt, mouseStart, keyAt, smileAt time.Time
-var last string
+var last scene
 var symbol, quadrant int
 var muted bool
 var activeAtlas *frameAtlas
 var baseFrame []byte
-var frameCache map[string][]byte
-var cacheOrder []string
+var frameCache map[scene][]byte
+var cacheOrder []scene
+var layers *expressionLayers
 var xFilter, yFilter []samples
 var sounds [3][]byte
 
@@ -166,6 +172,59 @@ func saveSetting(name, value string) {
 	if closeErr := temp.Close(); writeErr == nil && closeErr == nil {
 		_ = os.Rename(temp.Name(), target)
 	}
+}
+
+// This per-user entry is read when opening the menu and changed only on request.
+const startupKey = `Software\Microsoft\Windows\CurrentVersion\Run`
+const startupName = "ThreeColorPet"
+
+func startupCommand() (string, error) {
+	path, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	return `"` + path + `"`, nil
+}
+
+func registeredStartup() (string, error) {
+	var data [512]uint16
+	n := uint32(len(data) * 2)
+	rc := call(registry, "RegGetValueW", syscall.HKEY_CURRENT_USER, uintptr(unsafe.Pointer(str(startupKey))), uintptr(unsafe.Pointer(str(startupName))), 2, 0, uintptr(unsafe.Pointer(&data[0])), uintptr(unsafe.Pointer(&n)))
+	switch rc {
+	case 0:
+		return syscall.UTF16ToString(data[:]), nil
+	case 2, 3: // ERROR_FILE_NOT_FOUND / ERROR_PATH_NOT_FOUND
+		return "", nil
+	default:
+		return "", fmt.Errorf("无法读取登录启动设置（Windows 错误 %d）", rc)
+	}
+}
+
+func configureStartup(enabled bool) error {
+	key, name := str(startupKey), str(startupName)
+	if !enabled {
+		rc := call(registry, "RegDeleteKeyValueW", syscall.HKEY_CURRENT_USER, uintptr(unsafe.Pointer(key)), uintptr(unsafe.Pointer(name)))
+		if rc != 0 && rc != 2 && rc != 3 {
+			return fmt.Errorf("无法取消登录启动（Windows 错误 %d）", rc)
+		}
+		return nil
+	}
+	command, err := startupCommand()
+	if err != nil {
+		return err
+	}
+	data, err := syscall.UTF16FromString(command)
+	if err != nil {
+		return err
+	}
+	if len(data)-1 > 260 {
+		return fmt.Errorf("Windows 的登录启动命令最多支持 260 个字符，请将桌宠移到路径较短的目录。")
+	}
+	rc := call(registry, "RegSetKeyValueW", syscall.HKEY_CURRENT_USER, uintptr(unsafe.Pointer(key)), uintptr(unsafe.Pointer(name)), 1, uintptr(unsafe.Pointer(&data[0])), uintptr(len(data)*2))
+	if rc != 0 {
+		return fmt.Errorf("无法设置登录启动（Windows 错误 %d）", rc)
+	}
+	return nil
 }
 
 func toggleMute() {
@@ -220,9 +279,9 @@ func fitOrigin(pos, sz point, work rect) point {
 }
 
 func clearFrameCache() {
-	frameCache = make(map[string][]byte)
+	frameCache = make(map[scene][]byte)
 	cacheOrder = nil
-	currentMasterName, gazeCanvas.frame, last = "", "", ""
+	currentMasterName, gazeCanvas.frame, last = scene{}, scene{}, scene{}
 	currentMaster = nil
 }
 
@@ -284,7 +343,7 @@ func setLayout(pct int, dpi uintptr, work rect, origin point, keepFeet bool) boo
 		return false
 	}
 	percent, xy = pct, fitOrigin(origin, target, work)
-	last = ""
+	last = scene{}
 	if baseFrame != nil {
 		paint(animationFrame(time.Now()))
 	}
@@ -526,6 +585,87 @@ func scaledFrame(src []byte) []byte {
 	return pixels
 }
 
+type expression struct {
+	smile  bool
+	amount int // 0=open, 64=half, 128=closed
+	heart  int // 0=absent, 1..6=the exported heart phases
+}
+type scene struct {
+	hand string
+	face expression
+}
+type expressionLayers struct {
+	blinkHalf, blinkFull, smileHalf, smileFull []byte
+	hearts                                     [6][]byte
+}
+
+var faceRect = image.Rect(208, 108, 389, 254)
+var heartRect = image.Rect(420, 39, 496, 162)
+
+func extractRegion(full []byte, rect image.Rectangle) []byte {
+	stride := rect.Dx() * 4
+	out := make([]byte, stride*rect.Dy())
+	for y := rect.Min.Y; y < rect.Max.Y; y++ {
+		offset := 4 * (y*masterWidth + rect.Min.X)
+		copy(out[(y-rect.Min.Y)*stride:], full[offset:offset+stride])
+	}
+	return out
+}
+
+func loadExpressionLayers(atlas *frameAtlas) *expressionLayers {
+	l := &expressionLayers{}
+	temp := make([]byte, masterWidth*masterHeight*4)
+	for _, asset := range []struct {
+		name string
+		dest *[]byte
+	}{
+		{"blinkHalf", &l.blinkHalf}, {"idle7", &l.blinkFull}, {"smileHalf", &l.smileHalf}, {"smile0", &l.smileFull},
+	} {
+		if !atlas.copyFrame(asset.name, temp) {
+			return nil
+		}
+		*asset.dest = extractRegion(temp, faceRect)
+	}
+	for i := range l.hearts {
+		if !atlas.copyFrame(fmt.Sprintf("smile%d", i), temp) {
+			return nil
+		}
+		l.hearts[i] = extractRegion(temp, heartRect)
+	}
+	return l
+}
+
+func (l *expressionLayers) apply(full []byte, face expression) {
+	if face.amount > 0 {
+		half, closed := l.blinkHalf, l.blinkFull
+		if face.smile {
+			half, closed = l.smileHalf, l.smileFull
+		}
+		stride := 4 * faceRect.Dx()
+		for y := faceRect.Min.Y; y < faceRect.Max.Y; y++ {
+			start := 4 * (y*masterWidth + faceRect.Min.X)
+			dest := full[start : start+stride]
+			src := (y - faceRect.Min.Y) * stride
+			from, to, weight := dest, half[src:src+stride], face.amount
+			if face.amount > 64 {
+				from, to, weight = to, closed[src:src+stride], face.amount-64
+			}
+			for j := range dest {
+				dest[j] = byte((int(from[j])*(64-weight) + int(to[j])*weight + 32) >> 6)
+			}
+		}
+	}
+	if face.heart > 0 {
+		layer := l.hearts[face.heart-1]
+		stride := 4 * heartRect.Dx()
+		for y := heartRect.Min.Y; y < heartRect.Max.Y; y++ {
+			start := 4 * (y*masterWidth + heartRect.Min.X)
+			row := (y - heartRect.Min.Y) * stride
+			copy(full[start:start+stride], layer[row:row+stride])
+		}
+	}
+}
+
 func selectCharacter(index int) bool {
 	atlas := loadAtlas(index)
 	if atlas == nil {
@@ -539,18 +679,23 @@ func selectCharacter(index int) bool {
 	if rig == nil {
 		return false
 	}
-	character, activeAtlas, activeRig, baseFrame = index, atlas, rig, idle
-	smileAt = time.Time{}
+	parts := loadExpressionLayers(atlas)
+	if parts == nil {
+		return false
+	}
+	character, activeAtlas, activeRig, baseFrame, layers = index, atlas, rig, idle, parts
+	smileAt, patAt, resumeAt = time.Time{}, time.Time{}, time.Time{}
 	stroke = headStroke{}
 	clearFrameCache()
-	paint("idle0")
+	paint(scene{hand: "idle0"})
 	return true
 }
 
-func masterFrame(name string) []byte {
-	if name == currentMasterName && currentMaster != nil {
+func masterFrame(view scene) []byte {
+	if view == currentMasterName && currentMaster != nil {
 		return currentMaster
 	}
+	name := view.hand
 	source := baseFrame
 	if name != "idle0" {
 		source = make([]byte, len(baseFrame))
@@ -564,11 +709,17 @@ func masterFrame(name string) []byte {
 			return nil
 		}
 	}
-	currentMasterName, currentMaster = name, source
+	if view.face != (expression{}) {
+		if name == "idle0" {
+			source = bytes.Clone(baseFrame)
+		}
+		layers.apply(source, view.face)
+	}
+	currentMasterName, currentMaster = view, source
 	return source
 }
 
-func framePixels(name string) []byte {
+func framePixels(name scene) []byte {
 	if pixels, ok := frameCache[name]; ok {
 		return pixels
 	}
@@ -594,12 +745,16 @@ func framePixels(name string) []byte {
 // of a master pixel, giving exact 1/512-pixel coordinates before interpolation.
 type gazePose struct{ headX, headY, eyeX, eyeY int }
 
-func (s *gazeState) pose(name string) gazePose {
+func (s *gazeState) pose(view scene) gazePose {
 	q := func(v float64) int { return int(math.Round(v * 64)) }
 	p := gazePose{headX: q(s.head.x), headY: q(s.head.y)}
-	if name != "idle7" && !strings.HasPrefix(name, "smile") {
-		p.eyeX, p.eyeY = q(s.eyes.x), q(s.eyes.y)
+	amount := view.face.amount
+	eyeWeight := float64(192-2*amount) / 192
+	if amount > 64 {
+		eyeWeight = float64(128-amount) / 192
 	}
+	p.eyeX = int(math.Round(float64(q(s.eyes.x)) * eyeWeight))
+	p.eyeY = int(math.Round(float64(q(s.eyes.y)) * eyeWeight))
 	return p
 }
 
@@ -681,7 +836,7 @@ func (r *gazeRig) warp(src, dst []byte, pose gazePose) {
 // The gaze is independent of the action. Only the current master canvas and
 // one scratch canvas are retained; pose combinations never enter the frame cache.
 type gazeWork struct {
-	frame              string
+	frame              scene
 	master, horizontal []byte
 }
 
@@ -697,7 +852,7 @@ func affectedRange(axis []samples, low, high int) (int, int) {
 	return left, right
 }
 
-func (work *gazeWork) render(dst []byte, name string, pose gazePose) {
+func (work *gazeWork) render(dst []byte, name scene, pose gazePose) {
 	r := activeRig
 	if r == nil || pose == (gazePose{}) {
 		return
@@ -751,14 +906,14 @@ func (work *gazeWork) render(dst []byte, name string, pose gazePose) {
 	}
 }
 
-func paint(name string) {
+func paint(name scene) {
 	pose := gaze.pose(name)
 	if bits == nil || baseFrame == nil || (name == last && pose == lastPose) {
 		return
 	}
 	pixels := framePixels(name)
 	if pixels == nil {
-		name = "idle0"
+		name = scene{hand: "idle0"}
 		pose = gaze.pose(name)
 		if name == last && pose == lastPose {
 			return
@@ -777,13 +932,13 @@ func paint(name string) {
 
 func keyStage(age int64) int {
 	switch {
-	case age < 35:
+	case age < 18:
 		return 1
-	case age < 70:
+	case age < 42:
 		return 2
-	case age < 110:
+	case age < 100:
 		return 3
-	case age < 155:
+	case age < 150:
 		return 4
 	case age < 220:
 		return 5
@@ -796,9 +951,9 @@ func mouseStage(reach, sinceMove int64) int {
 	switch {
 	case sinceMove >= 850:
 		return 0
-	case sinceMove >= 770:
+	case sinceMove > 770:
 		return 1
-	case sinceMove >= 690:
+	case sinceMove > 690:
 		return 2
 	case reach < 40:
 		return 1
@@ -809,30 +964,207 @@ func mouseStage(reach, sinceMove int64) int {
 	}
 }
 
-func animationFrame(now time.Time) string {
-	if elapsed := now.Sub(smileAt); elapsed >= 0 && elapsed < time.Second {
-		stage := 0
-		for _, end := range [...]time.Duration{100, 250, 430, 630, 830} {
-			if elapsed < end*time.Millisecond {
-				break
+type keyMotion int
+
+const (
+	standaloneKey keyMotion = iota
+	rapidKey
+	fromMouseKey
+)
+
+var keyMode keyMotion
+var mouseRequested, bridgeToMouse bool
+var startWrist, contactMS int
+var contactTimer *time.Timer
+var contactTicket uintptr
+var patAt, resumeAt time.Time
+var resumeAmount int
+
+func keyDuration() int64 {
+	switch keyMode {
+	case rapidKey:
+		return 150
+	case fromMouseKey:
+		return 205
+	default:
+		return 220
+	}
+}
+func contactBeforeMouse() int64 {
+	switch keyMode {
+	case rapidKey:
+		return 45
+	case fromMouseKey:
+		return 85
+	default:
+		return 90
+	}
+}
+func typingHand(age int64) string {
+	var phase int
+	switch keyMode {
+	case rapidKey:
+		switch {
+		case age < int64(contactMS):
+			phase = 3
+		case age < 95:
+			phase = 4
+		default:
+			phase = 5
+		}
+	case fromMouseKey:
+		switch {
+		case age < 35:
+			return fmt.Sprintf("wrist%d", startWrist+int(age)*(4-startWrist)/35)
+		case age < 44:
+			phase = 2
+		case age < 105:
+			phase = 3
+		case age < 150:
+			phase = 4
+		default:
+			phase = 5
+		}
+	default:
+		phase = keyStage(age)
+	}
+	return fmt.Sprintf("key%d-%d", symbol, phase)
+}
+func recordMouse(now time.Time) {
+	if !mouseRequested || now.Sub(mouseAt) >= 850*time.Millisecond {
+		mouseStart = now
+		bridgeToMouse = !keyAt.IsZero() && now.Sub(keyAt).Milliseconds() < keyDuration()
+		if bridgeToMouse {
+			earliest := keyAt.Add(time.Duration(contactBeforeMouse()) * time.Millisecond)
+			if mouseStart.Before(earliest) {
+				mouseStart = earliest
 			}
-			stage++
-		}
-		return fmt.Sprintf("smile%d", stage)
-	}
-	if n := keyStage(now.Sub(keyAt).Milliseconds()); n != 0 {
-		return fmt.Sprintf("key%d-%d", symbol, n)
-	}
-	if mouseAt.After(keyAt) {
-		if n := mouseStage(now.Sub(mouseStart).Milliseconds(), now.Sub(mouseAt).Milliseconds()); n != 0 {
-			return fmt.Sprintf("mouse%d%d", n, quadrant)
 		}
 	}
-	t := now.Sub(started).Milliseconds()
-	if t%4700 < 95 {
-		return "idle7"
+	mouseAt, mouseRequested = now, true
+}
+
+func handFrame(now time.Time) string {
+	mouseAge := now.Sub(mouseAt).Milliseconds()
+	if mouseRequested && !now.Before(mouseStart) && mouseAge < 850 {
+		reach := now.Sub(mouseStart).Milliseconds()
+		if bridgeToMouse {
+			if reach < 40 {
+				return fmt.Sprintf("wrist%d", 3-reach/10)
+			}
+			reach = 95 // the wrist has already arrived at the mouse
+		}
+		return fmt.Sprintf("mouse%d%d", mouseStage(reach, mouseAge), quadrant)
 	}
-	return fmt.Sprintf("idle%d", t/240%7)
+	if age := now.Sub(keyAt).Milliseconds(); !keyAt.IsZero() && age < keyDuration() {
+		return typingHand(age)
+	}
+	return fmt.Sprintf("idle%d", now.Sub(started).Milliseconds()/240%7)
+}
+
+func beginKey(v int, now time.Time) {
+	previous := handFrame(now)
+	gap := now.Sub(keyAt).Milliseconds()
+	toMouse := mouseRequested && bridgeToMouse && !now.Before(mouseStart)
+	contactMS = 45
+	switch {
+	case !keyAt.IsZero() && gap <= 150:
+		keyMode = rapidKey
+		if v == symbol && gap < 45 {
+			contactMS = max(12, int(gap/2))
+		}
+	case strings.HasPrefix(previous, "mouse"):
+		keyMode = fromMouseKey
+		switch previous[5] {
+		case '1':
+			startWrist = 3
+		case '2':
+			startWrist = 1
+		default:
+			startWrist = 0
+		}
+	case strings.HasPrefix(previous, "wrist") && toMouse:
+		keyMode = fromMouseKey
+		startWrist = int(previous[5] - '0')
+	default:
+		keyMode = standaloneKey
+	}
+	keyAt, symbol = now, v
+	mouseRequested, bridgeToMouse = false, false
+}
+
+func mixAmount(a, b int, elapsed, duration int64) int {
+	t := int(max(0, min(duration, elapsed)))
+	return (a*(int(duration)-t) + b*t + int(duration/2)) / int(duration)
+}
+func smileAmount(now time.Time) int {
+	age, quiet := now.Sub(smileAt).Milliseconds(), now.Sub(patAt).Milliseconds()
+	switch {
+	case quiet >= 900:
+		return 0
+	case quiet >= 815:
+		return mixAmount(64, 0, quiet-815, 85)
+	case quiet >= 735:
+		return 64
+	case quiet >= 680:
+		return mixAmount(128, 64, quiet-680, 55)
+	case !resumeAt.IsZero() && now.Sub(resumeAt) < 80*time.Millisecond:
+		return mixAmount(resumeAmount, 128, now.Sub(resumeAt).Milliseconds(), 80)
+	case age < 45:
+		return mixAmount(0, 64, age, 45)
+	case age < 100:
+		return 64
+	case age < 160:
+		return mixAmount(64, 128, age-100, 60)
+	default:
+		return 128
+	}
+}
+func faceAt(now time.Time) expression {
+	age, quiet := now.Sub(smileAt).Milliseconds(), now.Sub(patAt).Milliseconds()
+	if !patAt.IsZero() && quiet < 900 {
+		heart := 1
+		switch {
+		case age < 100:
+			heart = 1
+		case age < 220:
+			heart = 2
+		case quiet < 500:
+			heart = 3 + int((age-220)/180%2)
+		case quiet < 680:
+			heart = 5
+		default:
+			heart = 6
+		}
+		return expression{smile: true, amount: smileAmount(now), heart: heart}
+	}
+	age = now.Sub(started).Milliseconds()
+	if age < 4700 {
+		return expression{}
+	}
+	t := age % 4700
+	var amount int
+	switch {
+	case t < 32:
+		amount = mixAmount(0, 64, t, 32)
+	case t < 55:
+		amount = 64
+	case t < 78:
+		amount = mixAmount(64, 128, t-55, 23)
+	case t < 110:
+		amount = 128
+	case t < 135:
+		amount = mixAmount(128, 64, t-110, 25)
+	case t < 150:
+		amount = 64
+	case t < 185:
+		amount = mixAmount(64, 0, t-150, 35)
+	}
+	return expression{amount: amount}
+}
+
+func animationFrame(now time.Time) scene {
+	return scene{hand: handFrame(now), face: faceAt(now)}
 }
 
 func mouseQuadrant(p point) int {
@@ -895,19 +1227,24 @@ func onHead(p point) bool {
 }
 
 type headStroke struct {
-	since, lastMove time.Time
-	startX, extreme float64
-	direction       float64
-	consumed        bool
+	since, lastMove                    time.Time
+	startX, startY, extreme, direction float64
+	horizontal                         bool
 }
 
 var stroke headStroke
 
 func startSmile(now time.Time) {
-	if now.Sub(smileAt) >= 1300*time.Millisecond {
+	quiet := now.Sub(patAt)
+	switch {
+	case patAt.IsZero() || quiet >= 900*time.Millisecond:
 		smileAt = now
-		stroke.consumed = true
+		resumeAt = time.Time{}
+	case quiet >= 680*time.Millisecond:
+		resumeAmount = smileAmount(now)
+		resumeAt = now
 	}
+	patAt = now
 }
 
 func strokeHead(p point, now time.Time) {
@@ -915,27 +1252,35 @@ func strokeHead(p point, now time.Time) {
 		stroke = headStroke{}
 		return
 	}
-	if stroke.consumed || now.Sub(smileAt) < 1300*time.Millisecond {
-		return
-	}
-	x, _ := logicalPoint(p)
+	x, y := logicalPoint(p)
 	if stroke.since.IsZero() || now.Sub(stroke.lastMove) > 350*time.Millisecond || now.Sub(stroke.since) > 900*time.Millisecond {
-		stroke = headStroke{since: now, lastMove: now, startX: x, extreme: x}
+		stroke = headStroke{since: now, lastMove: now, startX: x, startY: y}
 		return
 	}
 	stroke.lastMove = now
 	if stroke.direction == 0 {
-		if math.Abs(x-stroke.startX) >= 7 {
-			stroke.direction = math.Copysign(1, x-stroke.startX)
-			stroke.extreme = x
+		dx, dy := x-stroke.startX, y-stroke.startY
+		if max(math.Abs(dx), math.Abs(dy)) < 7 {
+			return
 		}
+		stroke.horizontal = math.Abs(dx) >= math.Abs(dy)
+		delta, pos := dy, y
+		if stroke.horizontal {
+			delta, pos = dx, x
+		}
+		stroke.direction, stroke.extreme = math.Copysign(1, delta), pos
 		return
 	}
-	progress := (x - stroke.extreme) * stroke.direction
+	pos := y
+	if stroke.horizontal {
+		pos = x
+	}
+	progress := (pos - stroke.extreme) * stroke.direction
 	if progress > 0 {
-		stroke.extreme = x
+		stroke.extreme = pos
 	} else if progress <= -7 {
 		startSmile(now)
+		stroke.since, stroke.extreme, stroke.direction = now, pos, -stroke.direction
 	}
 }
 
@@ -957,10 +1302,7 @@ func sampleCursor(now time.Time) {
 		if !dragging && !buttonDown && !menuOpen {
 			strokeHead(p, now)
 		}
-		if !mouseAt.After(keyAt) || now.Sub(mouseAt) >= 850*time.Millisecond {
-			mouseStart = now
-		}
-		mouseAt = now
+		recordMouse(now)
 		cur = p
 	}
 	quadrant = mouseQuadrant(p)
@@ -970,6 +1312,34 @@ func tick() {
 	now := time.Now()
 	sampleCursor(now)
 	paint(animationFrame(now))
+}
+
+// WM_TIMER is generated only when the message queue has no higher-priority
+// work. Give initial contact its own posted notification during fast input.
+func cancelContact() {
+	contactTicket++
+	if contactTimer != nil {
+		contactTimer.Stop()
+		contactTimer = nil
+	}
+}
+
+func scheduleContact(due time.Time) {
+	window, ticket := hwnd, contactTicket
+	contactTimer = time.AfterFunc(time.Until(due), func() {
+		postWindowMessage.Call(window, contactMessage, ticket, 0)
+	})
+}
+
+func keyEventStart(now time.Time, queued, current uint32) time.Time {
+	// Both Win32 clocks wrap every 2^32 ms. Bound latency so a delayed message
+	// does not jump directly to the release pose when the queue recovers.
+	delay := min(int32(25), max(int32(0), int32(current-queued)))
+	start := now.Add(-time.Duration(delay) * time.Millisecond)
+	if start.Before(keyAt) {
+		return keyAt
+	}
+	return start
 }
 
 func input(l uintptr) {
@@ -1006,9 +1376,21 @@ func input(l uintptr) {
 			return
 		}
 	}
-	keyAt = time.Now()
-	sampleCursor(keyAt)
-	symbol = v
+	now := time.Now()
+	start := keyEventStart(now, uint32(call(u, "GetMessageTime")), uint32(call(k, "GetTickCount")))
+	cancelContact()
+	sampleCursor(now)
+	beginKey(v, start)
+	var due time.Time
+	if keyMode != rapidKey {
+		offset := 42 * time.Millisecond
+		if keyMode == fromMouseKey {
+			offset = 44 * time.Millisecond
+		}
+		due = start.Add(offset)
+		scheduleContact(due)
+	}
+	paint(animationFrame(time.Now()))
 	if !muted {
 		kind := 0
 		if v == 32 {
@@ -1022,10 +1404,19 @@ func input(l uintptr) {
 			call(winmm, "PlaySoundW", uintptr(unsafe.Pointer(&b[0])), 0, 7)
 		}
 	}
-	paint(animationFrame(keyAt))
+	if !due.IsZero() && time.Until(due) > 10*time.Millisecond {
+		// Prepare the expensive scaled contact pixels once, ahead of presentation.
+		framePixels(scene{hand: fmt.Sprintf("key%d-3", v), face: faceAt(due)})
+	}
 }
 func proc(h, m, w, l uintptr) uintptr {
 	switch m {
+	case contactMessage:
+		if w == contactTicket && contactTimer != nil {
+			contactTimer = nil
+			tick()
+		}
+		return 0
 	case 0xff:
 		input(l)
 	case 0x113:
@@ -1112,6 +1503,21 @@ func proc(h, m, w, l uintptr) uintptr {
 			flag = 8
 		}
 		call(u, "AppendMenuW", menu, flag, 1, uintptr(unsafe.Pointer(str("静音"))))
+		registered, readErr := registeredStartup()
+		command, pathErr := startupCommand()
+		startsAtLogin := registered != "" && strings.EqualFold(registered, command)
+		startupLabel := "登录时启动"
+		var startupFlag uintptr
+		switch {
+		case readErr != nil || pathErr != nil:
+			startupLabel += "（无法读取）"
+			startupFlag = 1
+		case startsAtLogin:
+			startupFlag = 8
+		case registered != "":
+			startupLabel += "（改用当前程序）"
+		}
+		call(u, "AppendMenuW", menu, startupFlag, 3, uintptr(unsafe.Pointer(str(startupLabel))))
 		call(u, "AppendMenuW", menu, 0, 2, uintptr(unsafe.Pointer(str("退出三色桌宠"))))
 		p := point{}
 		call(u, "GetCursorPos", uintptr(unsafe.Pointer(&p)))
@@ -1133,11 +1539,16 @@ func proc(h, m, w, l uintptr) uintptr {
 			}
 		case cmd == 1:
 			toggleMute()
+		case cmd == 3 && readErr == nil && pathErr == nil:
+			if err := configureStartup(!startsAtLogin); err != nil {
+				call(u, "MessageBoxW", h, uintptr(unsafe.Pointer(str(err.Error()))), uintptr(unsafe.Pointer(str("三色桌宠"))), 0x30)
+			}
 		case cmd == 2:
 			call(u, "DestroyWindow", h)
 		}
 		return 0
 	case 2:
+		cancelContact()
 		call(u, "PostQuitMessage", 0)
 		return 0
 	}

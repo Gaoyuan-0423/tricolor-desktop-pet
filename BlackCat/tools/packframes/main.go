@@ -68,8 +68,9 @@ func packRole(role, input, output string, tileSize, columns int) error {
 	if err != nil {
 		return err
 	}
-	if len(files) != 266 {
-		return fmt.Errorf("%s: expected 266 animation frames, got %d", role, len(files))
+	const expectedFrames = 32 + 240 // full poses and per-key lower sections
+	if len(files) != expectedFrames {
+		return fmt.Errorf("%s: expected %d animation frames, got %d", role, expectedFrames, len(files))
 	}
 	sort.Strings(files)
 	known := make(map[string]uint32)

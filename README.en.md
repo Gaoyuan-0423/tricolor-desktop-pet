@@ -4,7 +4,15 @@
 
 Three desktop companions for macOS and Windows. Move your mouse and your pet follows the cursor with her eyes, then turns her head. Type a letter and she taps the matching key on her own keyboard. Give her a head pat and she smiles as little hearts float up.
 
-[Download v1.2.0 · macOS / Windows / source](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/tag/v1.2.0)
+## Download 1.3.0
+
+| Platform | Download |
+| --- | --- |
+| macOS 12 or later, Apple silicon and Intel | [Universal macOS ZIP](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.3.0/TricolorPet-1.3.0-macOS-universal.zip) |
+| Windows x64 | [Windows EXE](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.3.0/TricolorPet-1.3.0-Windows-x64.exe) |
+| Source code | [1.3.0 source ZIP](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.3.0/TricolorPet-1.3.0-source.zip) |
+
+The Mac app is signed with Developer ID and notarized by Apple. The app includes the notarization ticket and passes Gatekeeper verification after extraction. [Release notes and SHA-256 checksums](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/tag/v1.3.0)
 
 ## The three pets at rest
 
@@ -17,6 +25,12 @@ The blue-haired maid, orange-haired companion and white-haired dragon appear fro
 </p>
 
 ## In the app
+
+### From mouse to keyboard
+
+Each pet moves her hand from the mouse to the keyboard and taps D, F and J. After a head pat, she taps the keys again while smiling. These frames use the macOS renderer with the same input sequence for all three pets. The keystrokes play back more slowly so you can see the contact.
+
+![All three pets lifting their wrists and typing, then typing again while smiling](docs/images/typing-and-pats.gif)
 
 ### Following the cursor
 
@@ -32,21 +46,22 @@ The three recordings follow the same order, with one Mac preview per pet. As the
 
 ### Head pats
 
-Click the top of a pet's head or gently stroke it back and forth. She closes her eyes and smiles as little hearts float above her.
+In 1.3.0, a tap on the head brings out a little smile before her eyes close and hearts float up. Keep stroking to prolong the smile. She can still type or hold the mouse while smiling.
 
 ![The blue, orange and white pets smiling with their eyes closed and hearts floating above their heads](docs/images/head-pat.png)
 
 ### Holding the mouse
 
-The columns below show the blue, orange and white characters. The top row shows their hands at rest. The bottom row shows how each character's right hand settles over the mouse buttons.
+The columns below show the blue, orange and white characters. The top row shows their hands at rest. The bottom row shows each character holding the mouse. In 1.3.0, she lifts her wrist when switching between the mouse and keyboard. During fast typing she taps successive keys directly and draws her fingers back when you stop.
 
 ![Close-ups of all three characters' hands at rest and holding the mouse](docs/images/mouse-grip.png)
 
 ## Getting started
 
-- **Mac** — Download the universal macOS ZIP, extract it and open `三色桌宠.app`. To make your pet respond while you type in other apps, right-click her, choose “开启输入监控…” (Open Input Monitoring), and allow access in System Settings.
-- **Windows** — Download the Windows x64 EXE and run it.
+- **Mac** — Download the universal macOS ZIP, extract it, move `三色桌宠.app` into Applications, then open it. To make your pet respond while you type in other apps, right-click her, choose “开启输入监控…” (Open Input Monitoring), and allow access in System Settings.
+- **Windows** — Save the Windows x64 EXE in a folder where you plan to keep it, then run it.
 - **Both platforms** — Drag your pet to move her. Right-click to switch characters, mute or unmute typing sounds, or change her size from 50% to 200%.
+- **Launch at login (1.3.0)** — Right-click your pet and select “登录时启动” to launch her the next time you sign in to this account. The option is off by default. Click it again to turn it off. If macOS asks for approval, the same menu can open Login Items in System Settings.
 
 ## Build from source
 

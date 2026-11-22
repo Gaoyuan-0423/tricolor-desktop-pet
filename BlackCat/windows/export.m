@@ -328,6 +328,7 @@ typedef struct {
     BOOL gripping;
     NSPoint sourceShoulder,sourceWrist;
     double gripCos,gripSin;
+    BOOL liftingGrip;
 } Placement;
 static NSPoint place(Placement p,NSPoint raw) {
     return NSMakePoint(p.x+p.scale*raw.x,p.y+p.scale*raw.y);
@@ -365,6 +366,16 @@ static NSPoint bone(NSPoint s,NSPoint a,NSPoint b,NSPoint destA,NSPoint destB) {
     double dx=destB.x-destA.x,dy=destB.y-destA.y,dl=fmax(1,hypot(dx,dy));
     return NSMakePoint(destA.x+u*dx-v*dy/dl,destA.y+u*dy+v*dx/dl);
 }
+static void solveElbow(Placement *p,double bendSide) {
+    double ux=p->newWrist.x-p->shoulder.x,uy=p->newWrist.y-p->shoulder.y,d=fmax(.01,hypot(ux,uy));
+    double upper=hypot(p->elbow.x-p->shoulder.x,p->elbow.y-p->shoulder.y);
+    double lower=hypot(p->wrist.x-p->elbow.x,p->wrist.y-p->elbow.y);
+    double extend=fmax(1,(d+.4)/(upper+lower));
+    upper*=extend; lower*=extend;
+    double along=(upper*upper-lower*lower+d*d)/(2*d);
+    double across=sqrt(fmax(0,upper*upper-along*along))*bendSide;
+    p->newElbow=NSMakePoint(p->shoulder.x+(along*ux-across*uy)/d,p->shoulder.y+(along*uy+across*ux)/d);
+}
 static void solveArm(Placement *p,BOOL right,NSArray *sleeve) {
     double first=DBL_MAX,sum=0,count=0;
     for (NSArray *v in sleeve) first=fmin(first,pointFrom(v).y);
@@ -375,14 +386,7 @@ static void solveArm(Placement *p,BOOL right,NSArray *sleeve) {
     p->newTip=NSMakePoint(p->tip.x+p->dx,p->tip.y+p->dy);
     double ang=fmax(-.16,fmin(.16,-p->dx*.0027)),x=p->wrist.x-p->tip.x,y=p->wrist.y-p->tip.y;
     p->newWrist=NSMakePoint(p->newTip.x+x*cos(ang)-y*sin(ang),p->newTip.y+x*sin(ang)+y*cos(ang));
-    double ux=p->newWrist.x-p->shoulder.x,uy=p->newWrist.y-p->shoulder.y,d=fmax(.01,hypot(ux,uy));
-    double upper=hypot(p->elbow.x-p->shoulder.x,p->elbow.y-p->shoulder.y);
-    double lower=hypot(p->wrist.x-p->elbow.x,p->wrist.y-p->elbow.y);
-    double extend=fmax(1,(d+.4)/(upper+lower));
-    upper*=extend; lower*=extend;
-    double along=(upper*upper-lower*lower+d*d)/(2*d);
-    double across=sqrt(fmax(0,upper*upper-along*along))*(right?-1:1);
-    p->newElbow=NSMakePoint(p->shoulder.x+(along*ux-across*uy)/d,p->shoulder.y+(along*uy+across*ux)/d);
+    solveElbow(p,right?-1:1);
 }
 static NSPoint articulated(Placement p,NSPoint s) {
     NSPoint upper=bone(s,p.shoulder,p.elbow,p.shoulder,p.newElbow);
@@ -394,8 +398,40 @@ static NSPoint articulated(Placement p,NSPoint s) {
     deformed.y-=1.5*p.press*ease(fabs(s.x-p.tip.x)/8)*ease((s.y-p.wrist.y)/8);
     return between(s,deformed,ease((s.y-p.shoulder.y)/9));
 }
+static NSPoint gripPoint(Placement p,NSPoint raw) {
+    double x=raw.x-p.sourceShoulder.x,y=raw.y-p.sourceShoulder.y;
+    return NSMakePoint(p.shoulder.x+p.gripCos*x-p.gripSin*y,
+                       p.shoulder.y+p.gripSin*x+p.gripCos*y);
+}
+static void liftGrip(Placement *p,NSDictionary *hand,int phase) {
+    p->liftingGrip=YES;
+    p->elbow=gripPoint(*p,pointFrom(hand[@"elbow"]));
+    p->wrist=gripPoint(*p,p->sourceWrist);
+    p->tip=gripPoint(*p,pointFrom(hand[@"tip"]));
+    double angle=phase==0?-.11:-.30,dx=phase==0?6.0:19.0,dy=phase==0?-5.5:-12.0;
+    p->newTip=NSMakePoint(p->tip.x+dx,p->tip.y+dy);
+    double x=p->wrist.x-p->tip.x,y=p->wrist.y-p->tip.y;
+    p->newWrist=NSMakePoint(p->newTip.x+cos(angle)*x-sin(angle)*y,p->newTip.y+sin(angle)*x+cos(angle)*y);
+    double side=(p->wrist.x-p->shoulder.x)*(p->elbow.y-p->shoulder.y)-
+                (p->wrist.y-p->shoulder.y)*(p->elbow.x-p->shoulder.x);
+    solveElbow(p,copysign(1.,side));
+}
+static double jointWeight(NSPoint s,NSPoint joint,NSPoint axis,double feather) {
+    double length=fmax(.01,hypot(axis.x,axis.y));
+    double projection=((s.x-joint.x)*axis.x+(s.y-joint.y)*axis.y)/length;
+    return ease(.5+projection/feather);
+}
 static NSPoint bend(Placement p,NSPoint raw) {
     if (p.gripping) {
+        if (p.liftingGrip) {
+            NSPoint s=gripPoint(p,raw);
+            NSPoint axis=NSMakePoint(p.wrist.x-p.shoulder.x,p.wrist.y-p.shoulder.y);
+            NSPoint upper=bone(s,p.shoulder,p.elbow,p.shoulder,p.newElbow);
+            NSPoint lower=bone(s,p.elbow,p.wrist,p.newElbow,p.newWrist);
+            NSPoint palm=bone(s,p.wrist,p.tip,p.newWrist,p.newTip);
+            NSPoint forearm=between(upper,lower,jointWeight(s,p.elbow,axis,11));
+            return between(forearm,palm,jointWeight(s,p.wrist,axis,6));
+        }
         double x=raw.x-p.sourceShoulder.x, y=raw.y-p.sourceShoulder.y;
         double wx=p.sourceWrist.x-p.sourceShoulder.x, wy=p.sourceWrist.y-p.sourceShoulder.y;
         // The entire palm stays rigid, including its outer fingers and thumb.
@@ -481,8 +517,10 @@ static void layers(PoseTexture *pose,Placement p,int top,NSBitmapImageRep *back,
     free(mesh);
 }
 static void render(NSURL *dir,NSString *name,PoseTexture *pose,Palette palette,int theme,
-                   int code,BOOL right,int phase,NSPoint target,int mouseLevel,int quadrant,int smile) {
-    BOOL key=code>=0,mouse=mouseLevel>0;
+                   int code,BOOL right,int phase,NSPoint target,int mouseLevel,int quadrant,int smile,
+                   int wristPhase) {
+    BOOL key=code>=0,mouse=mouseLevel>0,bridge=wristPhase>=0;
+    BOOL moving=key||mouse||bridge, grip=mouseLevel>=2||(bridge&&wristPhase<2);
     int top=key?patchTop:0;
     int outW=W*density,outH=(H-top)*density;
     NSBitmapImageRep *back=bitmap(outW,outH), *front=bitmap(outW,outH), *output=bitmap(outW,outH);
@@ -493,7 +531,7 @@ static void render(NSURL *dir,NSString *name,PoseTexture *pose,Palette palette,i
     p.y=211-NSMaxY(bounds)*p.scale;
     NSDictionary *hand=pose.rig[right?@"right":@"left"];
     double pressure=0;
-    if (key || mouse) {
+    if (moving) {
         p.tip=place(p,pointFrom(hand[@"tip"])); p.wrist=place(p,pointFrom(hand[@"wrist"]));
         p.elbow=place(p,pointFrom(hand[@"elbow"])); p.moving=YES;
         if (key) {
@@ -506,16 +544,24 @@ static void render(NSURL *dir,NSString *name,PoseTexture *pose,Palette palette,i
             NSPoint button=mouseButtonPoint();
             p.dx=(button.x-p.tip.x)*.20;
             p.dy=(button.y-p.tip.y)*.20-3;
+        } else if (bridge && !grip) {
+            // The palm unfolds over the gap between mouse and keyboard. Its
+            // fingers are attached to the wrist, not stretched to reach a key.
+            NSPoint button=mouseButtonPoint();
+            double reach=wristPhase==2?.43:.15, lift=wristPhase==2?7.0:4.0;
+            p.dx=(button.x-p.tip.x)*reach;
+            p.dy=(button.y-p.tip.y)*reach-lift;
         }
     }
     NSBitmapImageRep *movingArm=nil;
-    if (key || mouse) {
+    if (moving) {
         Placement fixed=p; fixed.moving=NO;
         layers(pose.plates[right?1:0],fixed,top,back,front);
         movingArm=bitmap(outW,outH);
-        if (mouseLevel>=2) {
-            Placement grip=mousePlacement(fixed,pose.mouseArm.rig,mouseLevel,quadrant);
-            layers(pose.mouseArm,grip,top,movingArm,nil);
+        if (grip) {
+            Placement gripPose=mousePlacement(fixed,pose.mouseArm.rig,mouseLevel,quadrant);
+            if (bridge) liftGrip(&gripPose,pose.mouseArm.rig,wristPhase);
+            layers(pose.mouseArm,gripPose,top,movingArm,nil);
         } else {
             solveArm(&p,right,hand[@"sleeve"]);
             layers(pose.arms[right?1:0],p,top,movingArm,nil);
@@ -544,12 +590,12 @@ static void render(NSURL *dir,NSString *name,PoseTexture *pose,Palette palette,i
         badge(palette,code,right,pressure);
     }
     [NSGraphicsContext restoreGraphicsState];
-    if (mouse) {
+    if (mouse || bridge) {
         if (!pose.neutralFrame) fail(@"缺少待机参考帧");
         memcpy(output.bitmapData,pose.neutralFrame.bitmapData,output.bytesPerRow*patchTop*density);
         // Keep the resting shoulder seam and the diagonal edge of the cape.
         // The two drawings meet inside the sleeve, away from the outer ink line.
-        if (mouseLevel>=2) {
+        if (grip) {
             for (int y=patchTop*density;y<375;y++) for (int x=150;x<304;x++) {
                 double seam=theme==0?319:theme==1?319+.40*(x-202):311;
                 double kept=1-ease((y-seam+10)/19);
@@ -565,7 +611,8 @@ static void render(NSURL *dir,NSString *name,PoseTexture *pose,Palette palette,i
     writeBitmap(output,[dir URLByAppendingPathComponent:[name stringByAppendingPathExtension:@"png"]]);
 }
 static void exportRole(NSString *role,int idx,Palette pal,NSURL *art,NSURL *assets,
-                       NSBitmapImageRep *smiles,NSBitmapImageRep *underlay,NSDictionary *rig,NSDictionary *face) {
+                       NSBitmapImageRep *smiles,NSBitmapImageRep *halfFaces,NSBitmapImageRep *underlay,
+                       NSDictionary *rig,NSDictionary *face) {
     NSURL *dir=[assets URLByAppendingPathComponent:role isDirectory:YES];
     NSError *e=nil;
     if (![NSFileManager.defaultManager createDirectoryAtURL:dir withIntermediateDirectories:YES attributes:nil error:&e]) fail(e.localizedDescription);
@@ -581,24 +628,37 @@ static void exportRole(NSString *role,int idx,Palette pal,NSURL *art,NSURL *asse
     separateArms(idle,under,NSMakeRect(0,0,idle.pixels.pixelsWide,idle.pixels.pixelsHigh));
     PoseTexture *blink=expression(idle,cell(base,3,2,1,nil,idx==0),face[role][@"blink"]);
     PoseTexture *smile=expression(idle,cell(smiles,3,1,idx,nil,idx==0),face[role][@"smile"]);
+    NSDictionary *halfRegistration=face[role][@"half"];
+    NSArray *marks=halfRegistration[@"ellipses"];
+    if (marks.count!=3) fail(@"缺少半闭眼与浅笑的定位数据");
+    NSMutableDictionary *eyesOnly=[halfRegistration mutableCopy];
+    eyesOnly[@"ellipses"]=[marks subarrayWithRange:NSMakeRange(0,2)];
+    PoseTexture *halfArt=cell(halfFaces,3,1,idx,nil,idx==0);
+    PoseTexture *blinkHalf=expression(idle,halfArt,eyesOnly);
+    PoseTexture *smileHalf=expression(idle,halfArt,halfRegistration);
     for (int i=0;i<8;i++) @autoreleasepool {
-        render(dir,[NSString stringWithFormat:@"idle%d",i],i==7?blink:idle,pal,idx,-1,NO,i,NSZeroPoint,0,0,-1);
+        render(dir,[NSString stringWithFormat:@"idle%d",i],i==7?blink:idle,pal,idx,-1,NO,i,NSZeroPoint,0,0,-1,-1);
+    }
+    render(dir,@"blinkHalf",blinkHalf,pal,idx,-1,NO,0,NSZeroPoint,0,0,-1,-1);
+    render(dir,@"smileHalf",smileHalf,pal,idx,-1,NO,0,NSZeroPoint,0,0,-1,-1);
+    for (int i=0;i<4;i++) @autoreleasepool {
+        render(dir,[NSString stringWithFormat:@"wrist%d",i],idle,pal,idx,-1,NO,0,NSZeroPoint,0,0,-1,i);
     }
     for (int i=0;i<6;i++) @autoreleasepool {
-        render(dir,[NSString stringWithFormat:@"smile%d",i],smile,pal,idx,-1,NO,0,NSZeroPoint,0,0,i);
+        render(dir,[NSString stringWithFormat:@"smile%d",i],smile,pal,idx,-1,NO,0,NSZeroPoint,0,0,i,-1);
     }
     for (int n=1;n<=3;n++) for (int q=0;q<4;q++) @autoreleasepool {
-        render(dir,[NSString stringWithFormat:@"mouse%d%d",n,q],idle,pal,idx,-1,NO,0,NSZeroPoint,n,q,-1);
+        render(dir,[NSString stringWithFormat:@"mouse%d%d",n,q],idle,pal,idx,-1,NO,0,NSZeroPoint,n,q,-1,-1);
     }
     for (int r=0;r<5;r++) {
         NSUInteger count=r==4?3:keyRows[r].length;
         for (NSUInteger k=0;k<count;k++) for (int n=1;n<=5;n++) @autoreleasepool {
             int code=r==4?(int[]){32,8,127}[k]:symbolFor([keyRows[r] characterAtIndex:k]);
             render(dir,[NSString stringWithFormat:@"key%d-%d",code,n],idle,pal,idx,code,r<4&&k<5,
-                   n,keyTarget(r,(int)k),0,0,-1);
+                   n,keyTarget(r,(int)k),0,0,-1,-1);
         }
     }
-    printf("%s: 26 full frames + 240 typing patches\n",role.UTF8String); fflush(stdout);
+    printf("%s: 32 full frames + 240 typing patches\n",role.UTF8String); fflush(stdout);
 }
 int main(int argc,const char *argv[]) {
     @autoreleasepool {
@@ -612,9 +672,10 @@ int main(int argc,const char *argv[]) {
         NSDictionary *face=faceData?[NSJSONSerialization JSONObjectWithData:faceData options:0 error:nil]:nil;
         if (!face) fail(@"缺少 expression-rig.json");
         NSBitmapImageRep *smiles=sheet([art URLByAppendingPathComponent:@"smile.png"]);
+        NSBitmapImageRep *halfFaces=sheet([art URLByAppendingPathComponent:@"half-face.png"]);
         NSBitmapImageRep *underlay=sheet([art URLByAppendingPathComponent:@"underlay.png"]);
-        exportRole(@"blue",0,(Palette){0xb9d1ec,0x7288b6,0xf2f8ff,0x48669e,0x3d5176,0x404f75},art,assets,smiles,underlay,rig,face);
-        exportRole(@"amber",1,(Palette){0xf1d2ab,0xcb976e,0xfff6e6,0xa34f25,0x694537,0x705146},art,assets,smiles,underlay,rig,face);
-        exportRole(@"frost",2,(Palette){0xdad4ed,0xa49bc2,0xfbf8ff,0x79639e,0x615677,0x736a8b},art,assets,smiles,underlay,rig,face);
+        exportRole(@"blue",0,(Palette){0xb9d1ec,0x7288b6,0xf2f8ff,0x48669e,0x3d5176,0x404f75},art,assets,smiles,halfFaces,underlay,rig,face);
+        exportRole(@"amber",1,(Palette){0xf1d2ab,0xcb976e,0xfff6e6,0xa34f25,0x694537,0x705146},art,assets,smiles,halfFaces,underlay,rig,face);
+        exportRole(@"frost",2,(Palette){0xdad4ed,0xa49bc2,0xfbf8ff,0x79639e,0x615677,0x736a8b},art,assets,smiles,halfFaces,underlay,rig,face);
     }
 }

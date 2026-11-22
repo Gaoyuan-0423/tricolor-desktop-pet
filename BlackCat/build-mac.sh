@@ -11,7 +11,9 @@ content="$app/Contents"
 mkdir -p "$content/MacOS" "$content/Resources"
 cp Info.plist "$content/Info.plist"
 clang -arch x86_64 -arch arm64 -mmacosx-version-min=12.0 -fobjc-arc -O2 -Wall \
-    -framework Cocoa -framework CoreGraphics -framework ImageIO -lz Cat.m PetFrameAtlas.m PetGazeMap.m -o "$content/MacOS/TriColorPet"
+    -framework Cocoa -framework CoreGraphics -framework ImageIO -framework ServiceManagement \
+    -framework CoreServices -lz Cat.m PetFrameAtlas.m PetGazeMap.m PetLoginItem.m PetMotion.m \
+    -o "$content/MacOS/TriColorPet"
 for role in blue amber frost; do
     mkdir "$content/Resources/$role"
     cp "windows/packed/$role/atlas.png" "windows/packed/$role/frames.z" "$content/Resources/$role/"
@@ -20,7 +22,16 @@ mkdir "$content/Resources/gaze"
 cp windows/gaze/{blue,amber,frost}.gaze "$content/Resources/gaze/"
 cp windows/assets/{0,1,2}.wav "$content/Resources/"
 "$content/MacOS/TriColorPet" --check
-codesign --force --sign - "$app"
+identity="${MACOS_SIGN_IDENTITY:--}"
+if [[ "$identity" == "-" ]]; then
+    codesign --force --sign - "$app"
+else
+    timestamp=--timestamp
+    if [[ -n "${MACOS_TIMESTAMP_URL:-}" ]]; then timestamp="--timestamp=$MACOS_TIMESTAMP_URL"; fi
+    codesign --force --options runtime "$timestamp" --sign "$identity" "$app"
+    codesign --verify --strict --all-architectures \
+        -R='anchor apple generic and certificate leaf[field.1.2.840.113635.100.6.1.13] exists' "$app"
+fi
 codesign --verify --strict --all-architectures "$app"
 dest="$output_dir/三色桌宠.app"
 if [[ -d "$dest" ]]; then mv "$dest" "$stage/previous.app"; fi

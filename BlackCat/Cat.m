@@ -4,6 +4,8 @@
 #import <stdio.h>
 #import "PetFrameAtlas.h"
 #import "PetGazeMap.h"
+#import "PetMotion.h"
+#import "PetLoginItem.h"
 
 static const CGFloat frameWidth = 300;
 static const CGFloat frameHeight = 270;
@@ -30,24 +32,6 @@ static int symbolForCode(unsigned int code) {
     return code < sizeof(keySymbols) / sizeof(*keySymbols) ? keySymbols[code] : 0;
 }
 
-typedef NS_ENUM(NSInteger, InputMode) { IdleMode, KeyMode, MouseMode };
-
-static NSString *frameName(InputMode mode, NSInteger lastActivityAge, NSInteger mouseSequenceAge,
-                           NSInteger elapsed, int symbol, int quadrant) {
-    if (mode == KeyMode && lastActivityAge < 220) {
-        int phase = lastActivityAge < 35 ? 1 : lastActivityAge < 70 ? 2 :
-                    lastActivityAge < 110 ? 3 : lastActivityAge < 155 ? 4 : 5;
-        return [NSString stringWithFormat:@"key%d-%d", symbol, phase];
-    }
-    if (mode == MouseMode && lastActivityAge < 850) {
-        int entry = mouseSequenceAge < 40 ? 1 : mouseSequenceAge < 95 ? 2 : 3;
-        int exit = lastActivityAge > 770 ? 1 : lastActivityAge > 690 ? 2 : 3;
-        return [NSString stringWithFormat:@"mouse%d%d", MIN(entry, exit), quadrant];
-    }
-    NSInteger idle = elapsed % 4700 < 95 ? 7 : (elapsed / 240) % 7;
-    return [NSString stringWithFormat:@"idle%ld", (long)idle];
-}
-
 // Coordinates use the 300×270 artwork with its origin at the top left.
 static NSPoint logicalCursorInScreenRect(NSPoint point, NSRect artwork) {
     if (NSIsEmptyRect(artwork)) return NSMakePoint(-1,-1);
@@ -63,14 +47,6 @@ static NSPoint advanceGaze(NSPoint current, NSPoint target, NSTimeInterval elaps
     double factor = -expm1(-elapsed/response);
     return NSMakePoint(current.x + (target.x-current.x)*factor,
                        current.y + (target.y-current.y)*factor);
-}
-
-static int smilePhase(NSInteger age) {
-    if (age < 0 || age >= 1000) return -1;
-    const NSInteger ends[] = {100, 250, 430, 630, 830};
-    int phase = 0;
-    while (phase < 5 && age >= ends[phase]) phase++;
-    return phase;
 }
 
 static BOOL hitsHead(NSPoint point) {
@@ -149,6 +125,32 @@ static CGImageRef copyPatchedFrame(CGImageRef idle, CGImageRef patch) CF_RETURNS
     return result;
 }
 
+// Copy or cross-fade only the exported face and heart rectangles in premultiplied sRGB.
+static NSData *faceOnHands(NSData *hands, NSData *half, NSData *full, NSData *hearts, PetExpression face) {
+    if (!hands || (face.level == 0 && face.heart < 0)) return hands;
+    NSMutableData *pixels = [hands mutableCopy];
+    uint8_t *out = pixels.mutableBytes;
+    if (face.level > 0 && half.length == hands.length && full.length == hands.length) {
+        const uint8_t *a = face.level <= 64 ? hands.bytes : half.bytes;
+        const uint8_t *b = face.level <= 64 ? half.bytes : full.bytes;
+        int blend = face.level <= 64 ? face.level : face.level-64;
+        for (int y=108; y<254; y++) {
+            size_t offset = (y*rasterWidth+208)*4, bytes = (389-208)*4;
+            if (blend == 64) memcpy(out+offset,b+offset,bytes);
+            else for (size_t k=offset; k<offset+bytes; k++)
+                out[k] = ((64-blend)*a[k]+blend*b[k]+32)/64;
+        }
+    }
+    if (face.heart >= 0 && hearts.length == hands.length) {
+        const uint8_t *src = hearts.bytes;
+        for (int y=39; y<162; y++) {
+            size_t offset = (y*rasterWidth+420)*4;
+            memcpy(out+offset,src+offset,(496-420)*4);
+        }
+    }
+    return pixels;
+}
+
 static NSRect constrainToScreen(NSRect frame, NSScreen *screen) {
     if (screen) {
         NSRect visible = screen.visibleFrame;
@@ -168,6 +170,7 @@ static NSURL *soundURL(int kind) {
 @property(nonatomic) BOOL draggable;
 @property(nonatomic, copy) NSString *role;
 - (void)pressKey:(unsigned int)code;
+- (void)pressKey:(unsigned int)code atTime:(NSInteger)eventTime;
 - (void)mouseActivity:(NSEventType)eventType;
 - (void)tick;
 @end
@@ -182,12 +185,15 @@ static NSURL *soundURL(int kind) {
     PetGazePose _pose;
     NSData *_neutralPixels;
     NSArray<NSSound *> *_sounds;
-    NSInteger _started, _lastKey, _lastMouse, _mouseStarted, _smileStarted, _lastGazeSample;
+    NSInteger _started, _lastGazeSample;
+    NSTimer *_contactTimer;
+    PetHands _hands;
+    PetPats _pats;
+    PetExpression _shownExpression;
     NSPoint _eyeDirection, _headDirection;
     NSPoint _downPoint, _windowAtPress;
     BOOL _pressed, _canPat, _dragged;
     HeadStroke _stroke;
-    int _symbol, _quadrant;
 }
 
 - (instancetype)initWithFrame:(NSRect)rect {
@@ -198,7 +204,8 @@ static NSURL *soundURL(int kind) {
         self.accessibilityRole = NSAccessibilityImageRole;
         _muted = [NSUserDefaults.standardUserDefaults boolForKey:@"soundMuted"];
         _started = milliseconds();
-        _lastKey = _lastMouse = _smileStarted = -2000;
+        PetHandsInit(&_hands);
+        PetPatsInit(&_pats);
         NSString *saved = [NSUserDefaults.standardUserDefaults stringForKey:@"selectedRole"];
         _role = [roleIDs containsObject:saved ?: @""] ? saved : roleIDs.firstObject;
         _atlas = atlasForRole(_role);
@@ -222,7 +229,7 @@ static NSURL *soundURL(int kind) {
     _gazeMap = gazeMap;
     _role = [role copy];
     _shownFrame = nil;
-    _smileStarted = -2000;
+    PetPatsInit(&_pats);
     _stroke.active = NO;
     [_framePixels removeAllObjects];
     if (_idleReference) {
@@ -235,13 +242,15 @@ static NSURL *soundURL(int kind) {
 }
 
 - (void)dealloc {
+    [_contactTimer invalidate];
     if (_idleReference) CGImageRelease(_idleReference);
 }
 
 - (BOOL)acceptsFirstMouse:(NSEvent *)event { return YES; }
 
 - (NSString *)accessibilityValue {
-    if ([_shownFrame hasPrefix:@"smile"]) return @"微笑";
+    if (_shownExpression.smiling) return @"微笑";
+    if ([_shownFrame hasPrefix:@"wrist"]) return @"抬腕";
     if ([_shownFrame hasPrefix:@"key"]) return @"敲键盘";
     if ([_shownFrame hasPrefix:@"mouse"]) return @"使用鼠标";
     return @"待机";
@@ -253,9 +262,7 @@ static NSURL *soundURL(int kind) {
 }
 
 - (void)smile {
-    NSInteger now = milliseconds();
-    if (now - _smileStarted < 1300) return;
-    _smileStarted = now;
+    PetPat(&_pats,milliseconds());
     _stroke.active = NO;
     [self tick];
 }
@@ -318,11 +325,34 @@ static NSURL *soundURL(int kind) {
 }
 
 - (void)pressKey:(unsigned int)code {
+    [self pressKey:code atTime:milliseconds()];
+}
+
+- (void)pressKey:(unsigned int)code atTime:(NSInteger)eventTime {
     int symbol = symbolForCode(code);
     if (!symbol) return;
-    _symbol = symbol;
-    _lastKey = milliseconds();
+    NSInteger now = milliseconds();
+    NSInteger start = MAX(MAX(_hands.lastMouse,_hands.lastKey),MAX(now-25,MIN(now,eventTime)));
+    [_contactTimer invalidate];
+    _contactTimer = nil;
+    PetPress(&_hands,symbol,start);
     [self tick];
+    if (_hands.style == PetRapidKey) {
+        [self displayIfNeeded];
+    } else {
+        // A 60 ms key interval leaves one refresh for contact. Schedule that frame
+        // at its own deadline so it cannot fall between two animation timer ticks.
+        NSInteger contact = start + (_hands.style == PetKeyFromMouse ? 44 : 42);
+        __weak PetView *weakSelf = self;
+        _contactTimer = [NSTimer timerWithTimeInterval:MAX(0,contact-milliseconds())/1000.0
+            repeats:NO block:^(NSTimer *timer) {
+                PetView *view = weakSelf;
+                [view tick];
+                [view displayIfNeeded];
+            }];
+        [NSRunLoop.mainRunLoop addTimer:_contactTimer forMode:NSRunLoopCommonModes];
+        [self pixelsForFrame:[NSString stringWithFormat:@"key%d-3",symbol]];
+    }
     [self playKey:symbol];
 }
 
@@ -330,17 +360,15 @@ static NSURL *soundURL(int kind) {
     if (!self.window) return;
     NSRect bounds = [self.window convertRectToScreen:[self convertRect:self.bounds toView:nil]];
     NSPoint p = NSEvent.mouseLocation;
-    _quadrant = (p.x > NSMidX(bounds) ? 1 : 0) + (p.y > NSMidY(bounds) ? 2 : 0);
+    int quadrant = (p.x > NSMidX(bounds) ? 1 : 0) + (p.y > NSMidY(bounds) ? 2 : 0);
     NSInteger now = milliseconds();
     NSPoint point = [self logicalPointAtScreenPoint:p];
-    if (eventType == NSEventTypeMouseMoved && !NSEvent.pressedMouseButtons &&
-        now - _smileStarted >= 1300 && hitsHead(point)) {
+    if (eventType == NSEventTypeMouseMoved && !NSEvent.pressedMouseButtons && hitsHead(point)) {
         if (sampleStroke(&_stroke, point, now)) [self smile];
     } else {
         _stroke.active = NO;
     }
-    if (_lastKey >= _lastMouse || now - _lastMouse >= 850) _mouseStarted = now;
-    _lastMouse = now;
+    PetMove(&_hands,quadrant,now);
     [self tick];
 }
 
@@ -359,39 +387,48 @@ static NSURL *soundURL(int kind) {
     return YES;
 }
 
+- (NSData *)pixelsForFrame:(NSString *)frame {
+    NSData *pixels = [_framePixels objectForKey:frame];
+    if (pixels) return pixels;
+    CGImageRef bitmap = [_atlas copyImageForFrame:frame];
+    if ([frame hasPrefix:@"key"] && bitmap) {
+        if (!_idleReference) _idleReference = [_atlas copyImageForFrame:@"idle0"];
+        CGImageRef full = copyPatchedFrame(_idleReference, bitmap);
+        CGImageRelease(bitmap);
+        bitmap = full;
+    }
+    if (bitmap) {
+        pixels = PetRGBAData(bitmap);
+        CGImageRelease(bitmap);
+        if (pixels) [_framePixels setObject:pixels forKey:frame cost:pixels.length];
+    }
+    return pixels;
+}
+
 - (void)tick {
-    NSInteger now = milliseconds();
+    NSInteger now = milliseconds(), elapsed = now-_started;
     PetGazePose previous = _pose;
     BOOL gazeChanged = [self trackCursor:now];
-    NSInteger keyAge = now-_lastKey, mouseAge = now-_lastMouse;
-    InputMode mode = keyAge < 220 ? KeyMode : (_lastMouse > _lastKey ? MouseMode : IdleMode);
-    int smile = smilePhase(now - _smileStarted);
-    NSString *frame = smile >= 0 ? [NSString stringWithFormat:@"smile%d", smile] :
-                       frameName(mode, mode == KeyMode ? keyAge : mouseAge, now-_mouseStarted,
-                                 now-_started, _symbol, _quadrant);
-    BOOL open = ![frame isEqualToString:@"idle7"] && ![frame hasPrefix:@"smile"];
-    if (![_shownFrame isEqualToString:frame]) {
-        _neutralPixels = [_framePixels objectForKey:frame];
-        if (!_neutralPixels) {
-            CGImageRef bitmap = [_atlas copyImageForFrame:frame];
-            if ([frame hasPrefix:@"key"] && bitmap) {
-                if (!_idleReference) _idleReference = [_atlas copyImageForFrame:@"idle0"];
-                CGImageRef full = copyPatchedFrame(_idleReference, bitmap);
-                CGImageRelease(bitmap);
-                bitmap = full;
-            }
-            if (bitmap) {
-                _neutralPixels = PetRGBAData(bitmap);
-                CGImageRelease(bitmap);
-                if (_neutralPixels) [_framePixels setObject:_neutralPixels forKey:frame cost:_neutralPixels.length];
-            }
-        }
+    NSString *frame = PetHandFrame(&_hands,now,elapsed);
+    PetExpression face = PetFace(&_pats,now,elapsed);
+    BOOL expressionChanged = face.level != _shownExpression.level || face.heart != _shownExpression.heart ||
+                             face.smiling != _shownExpression.smiling;
+    if (![_shownFrame isEqualToString:frame] || expressionChanged) {
+        NSData *hands = [self pixelsForFrame:frame];
+        NSData *half = face.level ? [self pixelsForFrame:face.smiling ? @"smileHalf" : @"blinkHalf"] : nil;
+        NSData *full = face.level ? [self pixelsForFrame:face.smiling ? @"smile0" : @"idle7"] : nil;
+        NSData *hearts = face.heart < 0 ? nil : [self pixelsForFrame:[NSString stringWithFormat:@"smile%d",face.heart]];
+        _neutralPixels = faceOnHands(hands,half,full,hearts,face);
         _shownFrame = frame;
-    } else if (!gazeChanged || (!open && previous.headX == _pose.headX && previous.headY == _pose.headY)) {
+        _shownExpression = face;
+    } else if (!gazeChanged || (face.level == 128 && previous.headX == _pose.headX && previous.headY == _pose.headY)) {
         return;
     }
-
-    NSData *pixels = [_gazeMap pixelsForSource:_neutralPixels pose:_pose openEyes:open];
+    PetGazePose effective = _pose;
+    int iris = PetIrisGain(face.level);
+    effective.eyeX = (int)lround(effective.eyeX*iris/192.0);
+    effective.eyeY = (int)lround(effective.eyeY*iris/192.0);
+    NSData *pixels = [_gazeMap pixelsForSource:_neutralPixels pose:effective openEyes:iris>0];
     CGImageRef image = PetImageFromRGBA(pixels, rasterWidth, rasterHeight);
     _currentImage = image ? [[NSImage alloc] initWithCGImage:image size:NSMakeSize(frameWidth, frameHeight)] : nil;
     _currentImage.cacheMode = NSImageCacheNever;
@@ -413,7 +450,7 @@ static NSURL *soundURL(int kind) {
 }
 @end
 
-@interface PetApplication : NSObject <NSApplicationDelegate, NSWindowDelegate>
+@interface PetApplication : NSObject <NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate>
 @property(nonatomic) BOOL preview;
 @property(nonatomic, strong) PetView *pet;
 - (void)checkKeyboard;
@@ -427,6 +464,7 @@ static CGEventRef observeKey(CGEventTapProxy proxy, CGEventType type, CGEventRef
     NSSegmentedControl *_roleControl;
     NSButton *_muteControl;
     NSMenuItem *_muteItem, *_keyboardStatus, *_controlsItem;
+    NSMenuItem *_loginItem, *_loginSettings;
     NSArray<NSMenuItem *> *_roleItems, *_sizeItems;
     NSInteger _scalePercent;
     id _localMonitor, _globalMonitor;
@@ -509,9 +547,43 @@ static CGEventRef observeKey(CGEventTapProxy proxy, CGEventType type, CGEventRef
     _statusItem.button.toolTip = [NSString stringWithFormat:@"三色桌宠 · %@", roleNames[i]];
 }
 
+- (void)refreshLoginItem {
+    PetLoginStatus status = PetLoginItemStatus();
+    _loginItem.title = status == PetLoginNeedsApproval ? @"登录时启动（等待系统允许）" :
+                       status == PetLoginUnavailable ? @"登录时启动（状态不可用）" : @"登录时启动";
+    _loginItem.state = status == PetLoginOn ? NSControlStateValueOn :
+                       status == PetLoginOff ? NSControlStateValueOff : NSControlStateValueMixed;
+    _loginSettings.hidden = status != PetLoginNeedsApproval;
+}
+
+- (void)menuNeedsUpdate:(NSMenu *)menu { [self refreshLoginItem]; }
+
+- (void)openLoginSettings:(id)sender { PetOpenLoginItemSettings(); }
+
+- (void)toggleLoginItem:(id)sender {
+    PetLoginStatus current = PetLoginItemStatus();
+    BOOL enable = current != PetLoginOn && current != PetLoginNeedsApproval;
+    NSError *error = nil;
+    if (!PetSetLoginItemEnabled(enable,&error)) {
+        NSAlert *alert = [NSAlert new];
+        alert.messageText = enable ? @"无法开启登录时启动" : @"无法关闭登录时启动";
+        alert.informativeText = error.localizedDescription ?: @"请在系统的登录项设置中检查当前状态。";
+        [alert runModal];
+    } else if (enable && PetLoginItemStatus() == PetLoginNeedsApproval) {
+        NSAlert *alert = [NSAlert new];
+        alert.messageText = @"登录时启动需要系统允许";
+        alert.informativeText = @"请在“系统设置”的“登录项”中允许三色桌宠。";
+        [alert addButtonWithTitle:@"打开登录项设置"];
+        [alert addButtonWithTitle:@"稍后"];
+        if ([alert runModal] == NSAlertFirstButtonReturn) PetOpenLoginItemSettings();
+    }
+    [self refreshLoginItem];
+}
+
 - (NSMenu *)makeMenu {
     NSMenu *menu = [NSMenu new];
     menu.autoenablesItems = NO;
+    menu.delegate = self;
     NSMutableArray *items = [NSMutableArray array];
     for (NSUInteger i = 0; i < roleIDs.count; i++) {
         NSMenuItem *item = [menu addItemWithTitle:roleNames[i] action:@selector(selectRole:) keyEquivalent:@""];
@@ -540,6 +612,12 @@ static CGEventRef observeKey(CGEventTapProxy proxy, CGEventType type, CGEventRef
         _keyboardStatus.enabled = NO;
         [menu addItemWithTitle:@"开启输入监控…" action:@selector(openInputSettings:) keyEquivalent:@""].target = self;
     }
+    [menu addItem:NSMenuItem.separatorItem];
+    _loginItem = [menu addItemWithTitle:@"登录时启动" action:@selector(toggleLoginItem:) keyEquivalent:@""];
+    _loginItem.target = self;
+    _loginSettings = [menu addItemWithTitle:@"打开登录项设置…" action:@selector(openLoginSettings:) keyEquivalent:@""];
+    _loginSettings.target = self;
+    [self refreshLoginItem];
     [menu addItem:NSMenuItem.separatorItem];
     [menu addItemWithTitle:@"退出三色桌宠" action:@selector(terminate:) keyEquivalent:@""].target = NSApp;
     [self updateMenu];
@@ -637,7 +715,7 @@ static CGEventRef observeKey(CGEventTapProxy proxy, CGEventType type, CGEventRef
             if (owner && e.window == owner->_window) {
                 if (e.type == NSEventTypeKeyDown) {
                     if (!(e.modifierFlags & NSEventModifierFlagCommand) && symbolForCode(e.keyCode)) {
-                        [owner.pet pressKey:e.keyCode];
+                        [owner.pet pressKey:e.keyCode atTime:(NSInteger)(e.timestamp*1000)];
                         return nil;
                     }
                 } else [owner.pet mouseActivity:e.type];
@@ -671,33 +749,73 @@ static CGEventRef observeKey(CGEventTapProxy proxy, CGEventType type, CGEventRef
 static CGEventRef observeKey(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void *context) {
     PetApplication *app = (__bridge PetApplication *)context;
     if (type == kCGEventKeyDown)
-        [app.pet pressKey:(unsigned int)CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode)];
+        [app.pet pressKey:(unsigned int)CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode)
+                   atTime:(NSInteger)(CGEventGetTimestamp(event)/1000000)];
     else if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput)
         [app checkKeyboard];
     return event;
 }
 
-static BOOL checkMotion(void) {
-    const NSInteger at[] = {0, 34, 35, 69, 70, 109, 110, 154, 155, 219};
-    const int phases[] = {1, 1, 2, 2, 3, 3, 4, 4, 5, 5};
-    for (int i = 0; i < 10; i++) {
-        NSString *expected = [NSString stringWithFormat:@"key83-%d", phases[i]];
-        if (![frameName(KeyMode, at[i], 0, 3000, 'S', 0) isEqualToString:expected]) return NO;
+static BOOL checkFastTyping(BOOL initiallyGripping) {
+    // All possible 16ms display offsets must show contact for all three 60ms-spaced keys.
+    for (NSInteger offset=0; offset<16; offset++) {
+        PetHands hands;
+        PetHandsInit(&hands);
+        if (initiallyGripping) PetMove(&hands,0,800);
+        BOOL saw[3] = {NO,NO,NO};
+        for (NSInteger t=0; t<180; t++) {
+            const int symbols[] = {'D','F','J'};
+            int current = (int)(t/60);
+            if (t%60 == 0) PetPress(&hands,symbols[current],1000+t);
+            if (t%16 != offset) continue;
+            NSString *expected = [NSString stringWithFormat:@"key%d-3",symbols[current]];
+            if ([PetHandFrame(&hands,1000+t,t) isEqualToString:expected]) saw[current] = YES;
+        }
+        if (!saw[0] || !saw[1] || !saw[2]) return NO;
     }
+    return YES;
+}
+
+static BOOL checkMotion(void) {
+    if (!checkFastTyping(NO) || !checkFastTyping(YES)) return NO;
+    PetHands hands;
+    PetHandsInit(&hands);
+    PetPress(&hands,'D',1000);
+    const NSInteger at[] = {0,17,18,41,42,99,100,149,150,219};
+    for (int i=0; i<10; i++)
+        if (![PetHandFrame(&hands,1000+at[i],at[i]) isEqualToString:
+              [NSString stringWithFormat:@"key68-%d",1+i/2]]) return NO;
+    PetPress(&hands,'D',1030);
+    if (![PetHandFrame(&hands,1030,30) isEqualToString:@"key68-3"] ||
+        ![PetHandFrame(&hands,1046,46) isEqualToString:@"key68-4"]) return NO;
+    PetMove(&hands,3,1048);
+    if (![PetHandFrame(&hands,1075,75) isEqualToString:@"wrist3"] ||
+        ![PetHandFrame(&hands,1106,106) isEqualToString:@"wrist0"] ||
+        ![PetHandFrame(&hands,1115,115) isEqualToString:@"mouse33"]) return NO;
+    PetHands interrupted = hands;
+    PetPress(&interrupted,'F',1080);
+    if (![PetHandFrame(&interrupted,1080,80) isEqualToString:@"key70-3"]) return NO;
+    PetPress(&hands,'J',1200);
+    if (![PetHandFrame(&hands,1200,200) isEqualToString:@"wrist0"] ||
+        ![PetHandFrame(&hands,1248,248) isEqualToString:@"key74-3"]) return NO;
+    PetPats pats;
+    PetPatsInit(&pats);
+    if (PetFace(&pats,1000,1000).level != 0 || PetFace(&pats,4750,4750).level != 64 ||
+        PetFace(&pats,4790,4790).level != 128 || PetFace(&pats,4864,4864).level >= 64) return NO;
+    PetPat(&pats,5000);
+    if (PetFace(&pats,5060,5060).level != 64 || PetFace(&pats,5200,5200).level != 128 ||
+        !PetFace(&pats,5240,5240).smiling) return NO;
+    PetPat(&pats,5520);
+    if (PetFace(&pats,5530,5530).level != 128 || pats.first != 5000) return NO;
+    int fading = PetFace(&pats,6300,6300).level;
+    PetPat(&pats,6300);
+    if (PetFace(&pats,6300,6300).level != fading || PetFace(&pats,6380,6380).level != 128 ||
+        PetFace(&pats,7200,7200).smiling || PetIrisGain(64)!=64 || PetIrisGain(128)!=0) return NO;
     HeadStroke stroke = {0};
-    if (sampleStroke(&stroke, NSMakePoint(140,60), 1000) ||
-        sampleStroke(&stroke, NSMakePoint(150,60), 1100) ||
-        sampleStroke(&stroke, NSMakePoint(157,60), 1150) ||
-        !sampleStroke(&stroke, NSMakePoint(147,60), 1230)) return NO;
-    return [frameName(KeyMode, 220, 0, 3000, 'S', 0) hasPrefix:@"idle"] &&
-           [frameName(MouseMode, 0, 0, 3000, 0, 3) isEqualToString:@"mouse13"] &&
-           [frameName(MouseMode, 5, 40, 3000, 0, 3) isEqualToString:@"mouse23"] &&
-           [frameName(MouseMode, 1, 95, 3000, 0, 3) isEqualToString:@"mouse33"] &&
-           [frameName(MouseMode, 740, 900, 3000, 0, 0) isEqualToString:@"mouse20"] &&
-           [frameName(MouseMode, 815, 1000, 3000, 0, 1) isEqualToString:@"mouse11"] &&
-           [frameName(MouseMode, 850, 1300, 3000, 0, 1) hasPrefix:@"idle"] &&
-           [frameName(IdleMode, 0, 0, 4701, 0, 0) isEqualToString:@"idle7"] &&
-           smilePhase(0) == 0 && smilePhase(999) == 5 && smilePhase(1000) == -1 &&
+    return !sampleStroke(&stroke,NSMakePoint(140,60),1000) &&
+           !sampleStroke(&stroke,NSMakePoint(150,60),1100) &&
+           !sampleStroke(&stroke,NSMakePoint(157,60),1150) &&
+           sampleStroke(&stroke,NSMakePoint(147,60),1230) &&
            hitsHead(NSMakePoint(150,77)) && hitsHead(NSMakePoint(193,77)) &&
            !hitsHead(NSMakePoint(194,77)) && !hitsHead(NSMakePoint(150,215));
 }
@@ -707,6 +825,47 @@ static BOOL samePixels(CGImageRef a, CGImageRef b) {
         return NO;
     NSData *left = PetRGBAData(a), *right = PetRGBAData(b);
     return left && [left isEqualToData:right];
+}
+
+static NSData *pixelsFromAtlas(PetFrameAtlas *atlas, NSString *name) {
+    CGImageRef frame = [atlas copyImageForFrame:name];
+    if (!frame) return nil;
+    NSData *pixels = PetRGBAData(frame);
+    CGImageRelease(frame);
+    return pixels;
+}
+
+static BOOL checkExpressionLayers(PetFrameAtlas *atlas) {
+    NSData *half = pixelsFromAtlas(atlas,@"smileHalf"), *full = pixelsFromAtlas(atlas,@"smile0");
+    NSData *heart = pixelsFromAtlas(atlas,@"smile3");
+    if (!half || !full || !heart) return NO;
+    for (NSString *name in @[@"mouse30",@"wrist2",@"key68-3"]) @autoreleasepool {
+        NSData *base = pixelsFromAtlas(atlas,name);
+        if ([name hasPrefix:@"key"]) {
+            NSMutableData *combined = [pixelsFromAtlas(atlas,@"idle0") mutableCopy];
+            if (base.length != rasterWidth*keyPatchHeight*4 || !combined) return NO;
+            [combined replaceBytesInRange:NSMakeRange(combined.length-base.length,base.length)
+                                withBytes:base.bytes];
+            base = combined;
+        }
+        if (base.length != rasterWidth*rasterHeight*4) return NO;
+        for (NSNumber *amount in @[@32,@64,@128]) {
+            int level = amount.intValue;
+            NSData *output = faceOnHands(base,half,full,heart,(PetExpression){level,3,YES});
+            if (output.length != base.length || [output isEqualToData:base]) return NO;
+            const uint8_t *a = base.bytes, *b = half.bytes, *c = full.bytes, *h = heart.bytes, *out = output.bytes;
+            for (size_t y=0; y<rasterHeight; y++) for (size_t x=0; x<rasterWidth; x++) {
+                for (size_t k=(y*rasterWidth+x)*4, stop=k+4; k<stop; k++) {
+                    int expected = a[k];
+                    if (y>=108 && y<254 && x>=208 && x<389)
+                        expected = level==128 ? c[k] : level==64 ? b[k] : (a[k]+b[k]+1)/2;
+                    else if (y>=39 && y<162 && x>=420 && x<496) expected = h[k];
+                    if (out[k]!=expected) return NO;
+                }
+            }
+        }
+    }
+    return YES;
 }
 
 static BOOL checkRole(PetFrameAtlas *atlas, NSString *role, NSSet<NSString *> *frames, NSURL *references) {
@@ -780,6 +939,8 @@ static int checkBundle(NSURL *references) {
     NSMutableSet<NSString *> *frames = [NSMutableSet set];
     for (int i = 0; i < 8; i++) [frames addObject:[NSString stringWithFormat:@"idle%d", i]];
     for (int i = 0; i < 6; i++) [frames addObject:[NSString stringWithFormat:@"smile%d", i]];
+    for (int i = 0; i < 4; i++) [frames addObject:[NSString stringWithFormat:@"wrist%d", i]];
+    [frames addObjectsFromArray:@[@"blinkHalf",@"smileHalf"]];
     for (int level = 1; level <= 3; level++)
         for (int q = 0; q < 4; q++) [frames addObject:[NSString stringWithFormat:@"mouse%d%d", level, q]];
     for (unsigned int code = 0; code < sizeof(keySymbols) / sizeof(*keySymbols); code++) {
@@ -787,7 +948,7 @@ static int checkBundle(NSURL *references) {
         if (sym) for (int depth = 1; depth <= 5; depth++)
             [frames addObject:[NSString stringWithFormat:@"key%d-%d", sym, depth]];
     }
-    if (frames.count != 266 || symbolForCode(1) != 'S' || symbolForCode(47) != 1046 ||
+    if (frames.count != 272 || symbolForCode(1) != 'S' || symbolForCode(47) != 1046 ||
         symbolForCode(51) != 8 || symbolForCode(117) != 127 || symbolForCode(65535) != 0 ||
         !checkMotion()) {
         fprintf(stderr, "输入映射或动作时序检查失败\n");
@@ -799,18 +960,18 @@ static int checkBundle(NSURL *references) {
             fprintf(stderr, "角色图集无效：%s\n", role.UTF8String);
             return 1;
         }
-        if (!checkGaze(atlas, role)) {
-            fprintf(stderr, "视线位移图或合成检查失败：%s\n", role.UTF8String);
+        if (!checkExpressionLayers(atlas) || !checkGaze(atlas, role)) {
+            fprintf(stderr, "表情分层、视线位移图或合成检查失败：%s\n", role.UTF8String);
             return 1;
         }
-        printf("%s · 26 帧 600×540 · 240 个按键补丁 600×250\n", role.UTF8String);
+        printf("%s · 32 帧 600×540 · 240 个按键补丁 600×250\n", role.UTF8String);
     }
-    if (references) puts("798 个还原帧和 720 个合成按键帧与原 PNG 的预乘 sRGB RGBA 逐像素一致");
+    if (references) puts("816 个还原帧和 720 个合成按键帧与原 PNG 的预乘 sRGB RGBA 逐像素一致");
     for (int i = 0; i < 3; i++) {
         NSURL *url = soundURL(i);
         if (!url || ![[NSSound alloc] initWithContentsOfURL:url byReference:NO]) return 1;
     }
-    puts("键位、五阶段按键、鼠标、摸头、头眼独立视线与 3 个音效检查通过");
+    puts("键位、连续触底、抬腕、独立表情、头眼视线与 3 个音效检查通过");
     return 0;
 }
 

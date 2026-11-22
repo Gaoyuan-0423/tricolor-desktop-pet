@@ -4,7 +4,15 @@
 
 适用于 macOS 和 Windows 的键鼠桌宠，有三个角色可选。你移动鼠标时，她的目光会先看过去，头部随后转动。你敲键时，她会伸手按下对应的键。轻点她的头，她会微笑，头顶还会飘出小爱心。
 
-[下载 v1.2.0 · macOS / Windows / 源码](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/tag/v1.2.0)
+## 下载 1.3.0
+
+| 平台 | 下载 |
+| --- | --- |
+| macOS 12 及以上，Apple 芯片和 Intel | [macOS 通用版 ZIP](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.3.0/TricolorPet-1.3.0-macOS-universal.zip) |
+| Windows x64 | [Windows 版 EXE](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.3.0/TricolorPet-1.3.0-Windows-x64.exe) |
+| 源码 | [1.3.0 源码 ZIP](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/download/v1.3.0/TricolorPet-1.3.0-source.zip) |
+
+Mac 版已使用 Developer ID 签名并通过 Apple 公证。公证票据已随应用打包，解压后的应用通过了 Gatekeeper 验证。[发行说明与 SHA-256 校验值](https://github.com/Gaoyuan-0423/tricolor-desktop-pet/releases/tag/v1.3.0)
 
 ## 三位桌宠的待机形象
 
@@ -17,6 +25,12 @@
 </p>
 
 ## 桌宠实际画面
+
+### 握鼠、快打与摸头
+
+三位角色依次握鼠、抬腕、连敲 D、F、J，然后在微笑时再敲一遍。下图用 Mac 版的绘制代码按同一组输入生成，并放慢了触键片段。
+
+![三位角色抬腕、连敲三个键，并在摸头微笑时继续打字](docs/images/typing-and-pats.gif)
 
 ### 视线跟随
 
@@ -32,21 +46,22 @@
 
 ### 摸头
 
-轻点头顶或在头上来回轻抚一下，角色会闭眼微笑，头顶飘出小爱心。
+在 1.3.0 中，轻点头顶后，角色先眯眼浅笑，再闭眼，头顶飘出小爱心。持续来回轻抚可以延长笑容。这个过程中，她仍能敲键和握鼠标。
 
 ![从左到右，蓝、橙、白三个角色被摸头后闭眼微笑，头顶浮出爱心](docs/images/head-pat.png)
 
 ### 握鼠标
 
-从左到右是蓝、橙、白三个角色。上排是双手待机，下排是右手握稳鼠标时的姿势。
+上排是三位角色待机时的双手，下排是右手握稳鼠标时的姿势。1.3.0 在握鼠和打字之间加入抬腕过渡。连续敲键时，后续按键可以直接触底，松手后手指自然收回。
 
 ![三个角色待机和握鼠时的手部近景](docs/images/mouse-grip.png)
 
 ## 运行与操作
 
-- **Mac**　下载 macOS 通用版，解压后打开「三色桌宠.app」。要让角色跟随其他应用里的按键，右键角色，点「开启输入监控…」并在系统设置中授权。
-- **Windows**　下载 Windows x64 版，直接运行 EXE。
+- **Mac**　下载 macOS 通用版，解压后将「三色桌宠.app」移入「应用程序」，再打开。要让角色跟随其他应用里的按键，右键角色，点「开启输入监控…」并在系统设置中授权。
+- **Windows**　将 Windows x64 版 EXE 放在准备长期使用的文件夹里，双击运行。
 - **两个平台**　左键拖动可以移动角色。右键菜单可以切换角色、开关打字声，或将大小调到 50% 至 200%。
+- **登录时启动（1.3.0）**　默认关闭。右键角色，勾选「登录时启动」，下次登录当前账户时桌宠会自动打开。再次点击即可关闭。Mac 提示需要批准时，可从同一菜单打开系统的登录项设置。
 
 ## 从源码构建
 
