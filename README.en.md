@@ -1,6 +1,6 @@
 # Tricolor Desktop Pet
 
-<img src="BlackCat/Artwork/tricolor-logo.png" width="160" alt="Hand-painted portraits of the blue maid, orange sunflower girl, and white dragon">
+<img src="BlackCat/Artwork/tricolor-logo.png" width="160" alt="Hand-painted portraits of DeepSeek, Claude and Codex">
 
 [简体中文](README.md) · **English**
 
@@ -32,10 +32,10 @@ Moving the desktop cursor slides the pet’s mouse and the hand holding it toget
 
 ## The three pets at rest
 
-The blue-haired maid, orange-haired companion and white-haired dragon appear from left to right. Click any pet for a full-size view.
+From left to right are blue-haired DeepSeek, orange-haired Claude and white-haired Codex with dragon horns. Click any pet for a full-size view.
 
 <p align="center">
-  <a href="docs/images/idle-blue.png"><img src="docs/images/idle-blue.png" alt="The blue-haired maid at rest with her blue keyboard and mouse" width="31%"></a>
+  <a href="docs/images/idle-blue.png"><img src="docs/images/idle-blue.png" alt="Blue-haired DeepSeek at rest with her blue keyboard and mouse" width="31%"></a>
   <a href="docs/images/idle-amber.png"><img src="docs/images/idle-amber.png" alt="The orange-haired pet at rest with her orange keyboard and mouse" width="31%"></a>
   <a href="docs/images/idle-frost.png"><img src="docs/images/idle-frost.png" alt="The white-haired dragon at rest with her lavender keyboard and mouse" width="31%"></a>
 </p>
@@ -53,7 +53,7 @@ Each pet moves her hand from the mouse to the keyboard and taps D, F and J. Afte
 The three recordings follow the same order, with one Mac preview per pet. As the cursor moves from one side of the window to the other, her eyes shift first and her head turns a moment later.
 
 <p align="center">
-  <a href="docs/images/gaze-blue.gif"><img src="docs/images/gaze-blue.gif" alt="The blue-haired maid turns her eyes and head as the cursor moves from side to side" width="31%"></a>
+  <a href="docs/images/gaze-blue.gif"><img src="docs/images/gaze-blue.gif" alt="Blue-haired DeepSeek turns her eyes and head as the cursor moves from side to side" width="31%"></a>
   <a href="docs/images/gaze-amber.gif"><img src="docs/images/gaze-amber.gif" alt="The orange-haired pet tracks the cursor with her eyes and head" width="31%"></a>
   <a href="docs/images/gaze-frost.gif"><img src="docs/images/gaze-frost.gif" alt="The white-haired dragon turns to follow the cursor with her eyes and head" width="31%"></a>
 </p>

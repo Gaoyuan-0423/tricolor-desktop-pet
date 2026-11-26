@@ -1,6 +1,6 @@
 # 三色桌宠
 
-<img src="BlackCat/Artwork/tricolor-logo.png" width="160" alt="三位桌宠的手绘合照：蓝色女仆、橙色向日葵少女和白色小龙">
+<img src="BlackCat/Artwork/tricolor-logo.png" width="160" alt="三位桌宠的手绘合照：DeepSeek、Claude 和 Codex">
 
 **简体中文** · [English](README.en.md)
 
@@ -32,10 +32,10 @@ macOS 下载仍为未改动的 1.4.2：动画优先跟随显示器刷新，深�
 
 ## 三位桌宠的待机形象
 
-从左到右依次是蓝发女仆、橙发少女和白发龙角少女。点开任意一位可以查看完整尺寸。
+从左到右依次是蓝发的 DeepSeek、橙发的 Claude 和白发龙角的 Codex。点开任意一位可以查看完整尺寸。
 
 <p align="center">
-  <a href="docs/images/idle-blue.png"><img src="docs/images/idle-blue.png" alt="蓝发女仆的完整待机画面，面前放着蓝色键鼠" width="31%"></a>
+  <a href="docs/images/idle-blue.png"><img src="docs/images/idle-blue.png" alt="蓝发 DeepSeek 的完整待机画面，面前放着蓝色键鼠" width="31%"></a>
   <a href="docs/images/idle-amber.png"><img src="docs/images/idle-amber.png" alt="橙发少女的完整待机画面，面前放着橙色键鼠" width="31%"></a>
   <a href="docs/images/idle-frost.png"><img src="docs/images/idle-frost.png" alt="白发龙角少女的完整待机画面，面前放着淡紫色键鼠" width="31%"></a>
 </p>
@@ -53,7 +53,7 @@ macOS 下载仍为未改动的 1.4.2：动画优先跟随显示器刷新，深�
 下方三段 Mac 录屏也按蓝、橙、白排列，每位角色各有一段。光标从窗口一侧移到另一侧时，目光先转过去，头部随后轻轻转动。
 
 <p align="center">
-  <a href="docs/images/gaze-blue.gif"><img src="docs/images/gaze-blue.gif" alt="蓝发女仆的目光和头部跟随光标左右转动" width="31%"></a>
+  <a href="docs/images/gaze-blue.gif"><img src="docs/images/gaze-blue.gif" alt="蓝发 DeepSeek 的目光和头部跟随光标左右转动" width="31%"></a>
   <a href="docs/images/gaze-amber.gif"><img src="docs/images/gaze-amber.gif" alt="橙发少女的目光和头部跟随光标左右转动" width="31%"></a>
   <a href="docs/images/gaze-frost.gif"><img src="docs/images/gaze-frost.gif" alt="白发龙角少女的目光和头部跟随光标左右转动" width="31%"></a>
 </p>
